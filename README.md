@@ -21,7 +21,12 @@ uploads — encoding and decoding happen entirely in the browser.
    grid, and an **entry strip** (entry QR in a narrow side column with small
    top-up data codes stacked under it) — and picks whichever gives the audio
    codes bigger modules. Download as high-DPI PNG or vector SVG, with an
-   invert option for black cards.
+   invert option for black cards. The generator also renders a matching
+   **card front** — a monochrome, letterpress-style face with the MOMENTO
+   wordmark, the clip's waveform as fine mirrored bars, the name line, and a
+   "scan the back to listen" nudge — downloadable as its own PNG/SVG pair.
+   One ink on one stock, so the front prints, foils, or engraves with the
+   same setup as the back.
 2. **Player** (`/#p`): tap scan → the camera reads codes in any order (multiple
    per frame) with live progress → chunks are reassembled → the codec named in
    the chunk headers decodes → Web Audio plays the sound. Codec 2's 8 kHz
