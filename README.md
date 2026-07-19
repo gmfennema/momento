@@ -24,7 +24,9 @@ uploads — encoding and decoding happen entirely in the browser.
    invert option for black cards.
 2. **Player** (`/#p`): tap scan → the camera reads codes in any order (multiple
    per frame) with live progress → chunks are reassembled → the codec named in
-   the chunk headers decodes → Web Audio plays the sound. No camera handy (or
+   the chunk headers decodes → Web Audio plays the sound. Codec 2's 8 kHz
+   decode also gets a gentle presence/high-shelf EQ (rendered once offline)
+   before playback, which de-muffles narrowband speech at zero card cost. No camera handy (or
    permission denied)? Upload photo(s) of the card instead — add shots until
    every square is captured.
 

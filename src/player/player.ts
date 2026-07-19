@@ -4,6 +4,7 @@
 
 import { playPcm, type Playback } from '../lib/audio';
 import { codec2Decode, CODEC2_SAMPLE_RATE } from '../lib/codec2';
+import { enhanceNarrowband } from '../lib/enhance';
 import { lyraDecode, lyraSupported, warmUpLyra, LYRA_SAMPLE_RATE } from '../lib/lyra';
 import { ChunkCollector, LYRA_MODE_3200, MODE_BY_ID, WIRE_LYRA } from '../lib/chunk';
 import { scanPhoto, startScanner, type ScannerHandle } from './scanner';
@@ -231,6 +232,9 @@ export function mountPlayer(root: HTMLElement): void {
         pcmRate = LYRA_SAMPLE_RATE;
       } else {
         pcm = await codec2Decode(MODE_BY_ID[modeId]!, data);
+        // Narrowband decodes sound muffled — brighten once here (not per
+        // play) with a presence EQ; replays then cost nothing extra.
+        pcm = await enhanceNarrowband(pcm, CODEC2_SAMPLE_RATE);
         pcmRate = CODEC2_SAMPLE_RATE;
       }
       showReady();
