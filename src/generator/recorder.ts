@@ -11,7 +11,14 @@ export const RECORD_LIMIT_MS = 10_500;
 
 export async function startRecording(onTick?: (elapsedMs: number) => void): Promise<RecorderHandle> {
   const stream = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true },
+    audio: {
+      // No far-end signal to cancel when recording a memo — echo cancellation
+      // can only duck/distort the voice, so keep it off.
+      echoCancellation: false,
+      noiseSuppression: true,
+      autoGainControl: true,
+      channelCount: 1,
+    },
   });
   const rec = new MediaRecorder(stream);
   const parts: BlobPart[] = [];

@@ -5,15 +5,30 @@ import { VitePWA } from 'vite-plugin-pwa';
 // (e.g. "/" once a custom domain exists).
 const base = process.env.BASE_PATH ?? '/momento/';
 
+// The Lyra codec wasm uses threads → SharedArrayBuffer → the page must be
+// cross-origin isolated. Dev/preview servers send the headers directly;
+// on GitHub Pages (no custom headers) the service worker injects them
+// (see src/sw.ts).
+const coiHeaders = {
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'require-corp',
+};
+
 export default defineConfig({
   base,
   build: { target: 'es2022' },
+  server: { headers: coiHeaders },
+  preview: { headers: coiHeaders },
   plugins: [
     VitePWA({
       registerType: 'autoUpdate',
-      workbox: {
-        globPatterns: ['**/*.{js,css,html,wasm,webmanifest,png,svg,ico}'],
-        maximumFileSizeToCacheInBytes: 4_000_000,
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.ts',
+      injectManifest: {
+        globPatterns: ['**/*.{js,css,html,wasm,tflite,webmanifest,png,svg,ico}'],
+        // the Lyra wasm is ~3.8 MB
+        maximumFileSizeToCacheInBytes: 5_000_000,
       },
       manifest: {
         name: 'Momento — Audio on a Card',

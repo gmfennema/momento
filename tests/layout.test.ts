@@ -3,9 +3,11 @@ import { base45Length } from '../src/lib/base45';
 import { HEADER_BYTES } from '../src/lib/chunk';
 import {
   alnumCapacityL,
+  AUTO_MODULE_FLOOR_MM,
   CARD_H_MM,
   CARD_W_MM,
   maxChunkBytesForVersion,
+  pickAutoTier,
   planCard,
   TIERS,
 } from '../src/lib/layout';
@@ -61,6 +63,36 @@ describe('planCard', () => {
     const dense = planCard(4000, { inverted: false, textLine: 'Gabe Fennema' });
     if (dense.textLine === undefined) {
       expect(dense.warnings).toContain('text-dropped');
+    }
+  });
+
+  it('auto tier picks Lyra for a short clip, backs off for a long one', () => {
+    // A 6s clip at Lyra's 400 B/s is 2.4 KB — comfortably above the floor.
+    const short = pickAutoTier(6, { inverted: false }, true);
+    expect(short.codec).toBe('lyra');
+    const shortPlan = planCard(Math.ceil(6 * short.bytesPerSec), { inverted: false });
+    expect(shortPlan.moduleMm).toBeGreaterThanOrEqual(AUTO_MODULE_FLOOR_MM);
+
+    // At 10s Lyra means 4 KB; auto must never pick a tier below the floor
+    // when a comfortable one exists.
+    const long = pickAutoTier(10, { inverted: false }, true);
+    const longPlan = planCard(Math.ceil(10 * long.bytesPerSec), { inverted: false });
+    expect(longPlan.moduleMm).toBeGreaterThanOrEqual(AUTO_MODULE_FLOOR_MM);
+
+    // Auto never picks a lower tier than another that also clears the floor.
+    for (const seconds of [1, 3, 5, 8, 10]) {
+      const picked = pickAutoTier(seconds, { inverted: false }, true);
+      for (const other of TIERS) {
+        if (other.bytesPerSec <= picked.bytesPerSec) continue;
+        const plan = planCard(Math.ceil(seconds * other.bytesPerSec), { inverted: false });
+        expect(plan.moduleMm).toBeLessThan(AUTO_MODULE_FLOOR_MM);
+      }
+    }
+  });
+
+  it('auto tier without Lyra support never picks it', () => {
+    for (const seconds of [1, 5, 10]) {
+      expect(pickAutoTier(seconds, { inverted: false }, false).codec).toBe('codec2');
     }
   });
 

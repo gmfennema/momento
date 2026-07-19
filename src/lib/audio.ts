@@ -1,12 +1,15 @@
-// Browser-only audio helpers: decode/resample to Codec2's 8 kHz mono PCM,
-// playback via Web Audio, waveform drawing.
+// Browser-only audio helpers: decode/resample to the internal 16 kHz mono
+// PCM, playback via Web Audio, waveform drawing.
+//
+// Everything in the generator runs at 16 kHz (Lyra's wideband rate); the
+// Codec 2 path decimates to 8 kHz at encode time (lib/resample.ts).
 
-import { CODEC2_SAMPLE_RATE } from './codec2';
+export const PCM_SAMPLE_RATE = 16000;
 
 export const MAX_SECONDS = 10;
 
-/** Decode any audio blob/file and resample to 8 kHz mono Int16 PCM. */
-export async function fileToPcm8k(file: Blob): Promise<{ pcm: Int16Array; durationSec: number }> {
+/** Decode any audio blob/file and resample to 16 kHz mono float PCM. */
+export async function fileToFloat32(file: Blob): Promise<Float32Array> {
   const arrayBuf = await file.arrayBuffer();
   const decodeCtx = new AudioContext();
   let decoded: AudioBuffer;
@@ -15,24 +18,33 @@ export async function fileToPcm8k(file: Blob): Promise<{ pcm: Int16Array; durati
   } finally {
     void decodeCtx.close();
   }
-  const targetLen = Math.ceil(decoded.duration * CODEC2_SAMPLE_RATE);
-  const offline = new OfflineAudioContext(1, targetLen, CODEC2_SAMPLE_RATE);
+  const targetLen = Math.ceil(decoded.duration * PCM_SAMPLE_RATE);
+  const offline = new OfflineAudioContext(1, targetLen, PCM_SAMPLE_RATE);
   const src = offline.createBufferSource();
   src.buffer = decoded;
   src.connect(offline.destination);
   src.start();
   const rendered = await offline.startRendering();
-  const f32 = rendered.getChannelData(0);
+  // Copy out — the rendered buffer's storage may be reclaimed with the context.
+  return rendered.getChannelData(0).slice();
+}
+
+export function float32ToPcm(f32: Float32Array): Int16Array {
   const pcm = new Int16Array(f32.length);
   for (let i = 0; i < f32.length; i++) {
     pcm[i] = Math.max(-32768, Math.min(32767, Math.round(f32[i]! * 32767)));
   }
-  return { pcm, durationSec: rendered.duration };
+  return pcm;
 }
 
-export function slicePcm(pcm: Int16Array, startSec: number, endSec: number): Int16Array {
-  const a = Math.max(0, Math.floor(startSec * CODEC2_SAMPLE_RATE));
-  const b = Math.min(pcm.length, Math.ceil(endSec * CODEC2_SAMPLE_RATE));
+export function slicePcm(
+  pcm: Int16Array,
+  startSec: number,
+  endSec: number,
+  sampleRate = PCM_SAMPLE_RATE,
+): Int16Array {
+  const a = Math.max(0, Math.floor(startSec * sampleRate));
+  const b = Math.min(pcm.length, Math.ceil(endSec * sampleRate));
   return pcm.slice(a, b);
 }
 
@@ -42,7 +54,7 @@ export interface Playback {
 }
 
 /** Encode 16-bit mono PCM as a WAV blob. */
-export function pcmToWavBlob(pcm: Int16Array, sampleRate = CODEC2_SAMPLE_RATE): Blob {
+export function pcmToWavBlob(pcm: Int16Array, sampleRate: number): Blob {
   const header = new ArrayBuffer(44);
   const v = new DataView(header);
   const writeTag = (offset: number, tag: string): void => {
@@ -66,12 +78,12 @@ export function pcmToWavBlob(pcm: Int16Array, sampleRate = CODEC2_SAMPLE_RATE): 
   return new Blob([header, samples], { type: 'audio/wav' });
 }
 
-/** Play 8 kHz PCM. Call from a user gesture the first time (autoplay policy).
+/** Play mono PCM. Call from a user gesture the first time (autoplay policy).
  * Uses an <audio> element rather than Web Audio: iOS mutes Web Audio while the
  * ringer switch is on silent and suspends AudioContexts around camera use, but
  * media-element playback is exempt from both. */
-export function playPcm(pcm: Int16Array): Playback {
-  const url = URL.createObjectURL(pcmToWavBlob(pcm));
+export function playPcm(pcm: Int16Array, sampleRate = PCM_SAMPLE_RATE): Playback {
+  const url = URL.createObjectURL(pcmToWavBlob(pcm, sampleRate));
   const audio = new Audio(url);
   audio.setAttribute('playsinline', '');
   let finished = false;
@@ -100,6 +112,7 @@ export function playPcm(pcm: Int16Array): Playback {
 export function drawWaveform(
   canvas: HTMLCanvasElement,
   pcm: Int16Array,
+  sampleRate: number,
   selection?: [number, number], // seconds
 ): void {
   const ctx = canvas.getContext('2d')!;
@@ -111,7 +124,7 @@ export function drawWaveform(
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, cssW, cssH);
 
-  const durationSec = pcm.length / CODEC2_SAMPLE_RATE;
+  const durationSec = pcm.length / sampleRate;
   if (selection) {
     const [a, b] = selection;
     ctx.fillStyle = 'rgba(94, 234, 165, 0.12)';

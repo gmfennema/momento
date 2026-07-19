@@ -10,27 +10,46 @@ uploads — encoding and decoding happen entirely in the browser.
 
 ## How it works
 
-1. **Generator** (`/`): upload or record audio → trimmed to ≤10s → resampled to
-   8 kHz mono → compressed with the [Codec 2](https://github.com/drowe67/codec2)
-   speech codec (WebAssembly, in-browser) → split into self-describing chunks →
-   each chunk becomes a Base45/alphanumeric QR code → laid out on a card image
-   with one **entry QR** that carries the player URL. Download as high-DPI PNG
-   or vector SVG, with an invert option for black cards.
+1. **Generator** (`/`): upload or record audio → conditioned for the codec
+   (high-pass, leading/trailing silence dropped, loudness normalized) →
+   trimmed to ≤10s → compressed in-browser with either
+   [Lyra V2](https://github.com/google/lyra) (neural codec, 16 kHz wideband) or
+   the [Codec 2](https://github.com/drowe67/codec2) vocoder (8 kHz) → split
+   into self-describing chunks → each chunk becomes a Base45/alphanumeric QR
+   code → laid out on a card image with one **entry QR** that carries the
+   player URL. Download as high-DPI PNG or vector SVG, with an invert option
+   for black cards.
 2. **Player** (`/#p`): tap scan → the camera reads codes in any order (multiple
-   per frame) with live progress → chunks are reassembled → Codec 2 decodes →
-   Web Audio plays the sound. No camera handy (or permission denied)? Upload
-   photo(s) of the card instead — add shots until every square is captured.
+   per frame) with live progress → chunks are reassembled → the codec named in
+   the chunk headers decodes → Web Audio plays the sound. No camera handy (or
+   permission denied)? Upload photo(s) of the card instead — add shots until
+   every square is captured.
 
 ### Quality tiers
 
-| Tier | Codec 2 mode | 10s payload | Character |
+| Tier | Codec | 10s payload | Character |
 |---|---|---|---|
-| Compact | 700C | ~1.0 KB | Fewest/largest codes; robotic but intelligible voice |
-| Balanced (default) | 1600 | ~2.0 KB | Good speech quality, comfortably scannable |
-| Best | 3200 | ~4.0 KB | Clearest voice; dense card, needs precise engraving |
+| Auto (default) | picks per clip | — | Highest quality that keeps the card reliably scannable |
+| Compact | Codec 2 700C | ~1.0 KB | Fewest/largest codes; robotic but intelligible voice |
+| Balanced | Codec 2 1600 | ~2.0 KB | Decent speech quality, comfortably scannable |
+| Best | Lyra 3.2 kbps | ~4.0 KB | Natural wideband voice; dense card, needs precise engraving |
 
 The generator reports the physical module (dot) size live and warns below
 0.30 mm (scanning gets touchy) and 0.25 mm (many engravers can't hold it).
+The Auto tier never goes below 0.25 mm; shorter clips therefore get better
+codecs — a ~6s memo fits Lyra comfortably.
+
+Chunk headers carry a wire-format version, so cards engraved before the Lyra
+tier existed (version 0 = Codec 2) keep playing forever.
+
+### Cross-origin isolation
+
+The Lyra wasm uses threads, so it needs `SharedArrayBuffer`, which browsers
+only enable on cross-origin isolated pages. The dev/preview servers send the
+COOP/COEP headers directly; on GitHub Pages (which can't set headers) the
+service worker injects them into document responses, and `main.ts` reloads
+once on the very first visit so isolation kicks in. Browsers where that fails
+still get the Codec 2 tiers — the Best tier is simply disabled.
 
 ## Engraving notes
 
@@ -44,7 +63,7 @@ The generator reports the physical module (dot) size live and warns below
 ## Development
 
 ```bash
-npm install        # also copies the zxing wasm into public/zxing/
+npm install        # also copies the zxing + lyra wasm into public/
 npm run dev        # generator at /, player at /#p
 npm test           # unit + full-pipeline tests (node)
 npm run build      # typecheck + production build (base path /momento/)
@@ -54,7 +73,9 @@ npm run e2e        # Playwright smoke test against vite preview
 The keystone test (`tests/e2e-card.test.ts`) proves the whole physical
 contract in CI: synth audio → encode → render the card SVG → rasterize → scan
 the image with zxing → reassemble → decode → audio again, for every tier and
-the inverted variant.
+the inverted variant. The Lyra wasm itself can't run under node (it needs
+browser threads), so its tier is proven with a same-size payload there, and
+the full neural encode→card→photo→decode loop runs in the Playwright suite.
 
 ## Deploying
 
@@ -78,4 +99,7 @@ keeps resolving.
 
 App code is MIT. The Codec 2 WebAssembly artifacts in `public/codec2/` are
 LGPL 2.1 — see `public/codec2/NOTICE.md` for provenance and how to swap in
-your own build.
+your own build. The Lyra runtime copied to `public/lyra/` at install time is
+[lyra-codec](https://github.com/neuvideo/lyra-js) (ISC) wrapping
+[google/lyra](https://github.com/google/lyra) models (Apache 2.0) — see
+`public/lyra/NOTICE.md`.

@@ -1,5 +1,17 @@
 import './style.css';
 
+// Cross-origin isolation bootstrap for GitHub Pages: the first-ever visit is
+// served without COOP/COEP headers (Pages can't set them), so once the service
+// worker takes control — it injects the headers into document responses — the
+// page reloads a single time to pick them up. Later visits are already
+// controlled and isolated, and dev/preview get real headers, so this no-ops.
+if (!crossOriginIsolated && 'serviceWorker' in navigator && !sessionStorage.getItem('coi-reloaded')) {
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    sessionStorage.setItem('coi-reloaded', '1');
+    location.reload();
+  });
+}
+
 const app = document.getElementById('app')!;
 
 function route(): void {

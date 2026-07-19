@@ -1,10 +1,20 @@
 // Generator (maker-facing) page: audio in → engravable card out.
 // Everything happens in this browser tab; the audio never leaves it.
 
-import { fileToPcm8k, playPcm, slicePcm, MAX_SECONDS, type Playback } from '../lib/audio';
+import {
+  fileToFloat32,
+  playPcm,
+  slicePcm,
+  MAX_SECONDS,
+  PCM_SAMPLE_RATE,
+  type Playback,
+} from '../lib/audio';
 import { codec2Encode } from '../lib/codec2';
+import { lyraEncode, lyraSupported, warmUpLyra } from '../lib/lyra';
+import { preparePcm } from '../lib/preprocess';
+import { decimate2 } from '../lib/resample';
 import { randomCardId, splitPayload } from '../lib/chunk';
-import { planCard, TIERS, type CardPlan, type Tier } from '../lib/layout';
+import { pickAutoTier, planCard, TIERS, type CardPlan, type Tier } from '../lib/layout';
 import { chunkMatrix, entryMatrix } from '../lib/qr';
 import { drawCard, renderSvg, type RenderInput } from '../lib/render';
 import { startRecording, type RecorderHandle } from './recorder';
@@ -16,7 +26,7 @@ const PX_PER_MM = PNG_DPI / 25.4;
 interface State {
   pcm: Int16Array | null;
   trim: TrimState;
-  tierKey: Tier['key'];
+  tierKey: 'auto' | Tier['key'];
   inverted: boolean;
   textLine: string;
   cardId: number;
@@ -78,17 +88,24 @@ export function mountGenerator(root: HTMLElement): void {
     </div>
 
     <footer>
-      Audio is compressed with <a href="https://github.com/drowe67/codec2" target="_blank" rel="noreferrer">Codec 2</a>
-      (<a href="codec2/NOTICE.md" target="_blank">LGPL 2.1 notice</a>) entirely in your browser.
+      Audio is compressed entirely in your browser with
+      <a href="https://github.com/google/lyra" target="_blank" rel="noreferrer">Lyra</a>
+      (<a href="lyra/NOTICE.md" target="_blank">notices</a>) or
+      <a href="https://github.com/drowe67/codec2" target="_blank" rel="noreferrer">Codec 2</a>
+      (<a href="codec2/NOTICE.md" target="_blank">LGPL 2.1 notice</a>).
       Card is 3.5″ × 2″. Engrave at the exact output size — do not rescale.
     </footer>
   `;
 
   const $ = <T extends HTMLElement>(id: string): T => root.querySelector<T>(`#${id}`)!;
+  // Lyra (the "Best" tier) needs SharedArrayBuffer; when the page isn't
+  // cross-origin isolated (first-ever visit before the service worker kicks
+  // in, or an old browser) fall back to Codec 2 tiers only.
+  const lyraOk = lyraSupported();
   const state: State = {
     pcm: null,
     trim: { startSec: 0, endSec: 0 },
-    tierKey: 'balanced',
+    tierKey: 'auto',
     inverted: false,
     textLine: '',
     cardId: randomCardId(),
@@ -111,15 +128,23 @@ export function mountGenerator(root: HTMLElement): void {
     setError(null);
     $('audio-status').textContent = 'Decoding…';
     try {
-      const { pcm, durationSec } = await fileToPcm8k(blob);
+      const f32 = await fileToFloat32(blob);
+      // Condition the clip for the vocoders: high-pass, drop edge silence
+      // (silence costs card space at a fixed bitrate), normalize loudness.
+      const prepared = preparePcm(f32, PCM_SAMPLE_RATE);
+      const durationSec = prepared.pcm.length / PCM_SAMPLE_RATE;
       if (durationSec < 0.3) throw new Error('That clip is too short.');
-      state.pcm = pcm;
+      const trimmed = prepared.trimmedLeadSec + prepared.trimmedTailSec;
+      state.pcm = prepared.pcm;
       state.cardId = randomCardId();
-      $('audio-status').textContent = `${durationSec.toFixed(1)}s loaded`;
+      warmUpLyra();
+      $('audio-status').textContent =
+        `${durationSec.toFixed(1)}s loaded` +
+        (trimmed >= 0.3 ? ` (dropped ${trimmed.toFixed(1)}s of silence)` : '');
       const wrap = $('trim-wrap');
       wrap.style.display = 'block';
       const canvas = $<HTMLCanvasElement>('waveform');
-      state.trim = attachTrim(canvas, pcm, (t) => {
+      state.trim = attachTrim(canvas, prepared.pcm, (t) => {
         state.trim = t;
         updateTrimHint();
         scheduleUpdate();
@@ -139,7 +164,7 @@ export function mountGenerator(root: HTMLElement): void {
   }
 
   function updateTrimHint(): void {
-    const dur = state.pcm ? state.pcm.length / 8000 : 0;
+    const dur = state.pcm ? state.pcm.length / PCM_SAMPLE_RATE : 0;
     const sel = state.trim.endSec - state.trim.startSec;
     $('trim-hint').textContent =
       dur > MAX_SECONDS
@@ -195,18 +220,30 @@ export function mountGenerator(root: HTMLElement): void {
 
   // --- tiers ---
 
+  const tiles: Array<{ key: State['tierKey']; label: string; blurb: string }> = [
+    {
+      key: 'auto',
+      label: 'Auto',
+      blurb: 'Picks the highest quality that keeps this clip easy to scan.',
+    },
+    ...TIERS.map((t) => ({ key: t.key as State['tierKey'], label: t.label, blurb: t.blurb })),
+  ];
   const tiersEl = $('tiers');
-  for (const tier of TIERS) {
+  for (const tile of tiles) {
     const el = document.createElement('button');
     el.className = 'tier';
-    el.dataset.key = tier.key;
+    el.dataset.key = tile.key;
     el.innerHTML = `
-      <div class="name">${tier.label}</div>
-      <div class="blurb">${tier.blurb}</div>
+      <div class="name">${tile.label}</div>
+      <div class="blurb">${tile.blurb}</div>
       <div class="stats" data-stats>—</div>
     `;
+    if (tile.key === 'best' && !lyraOk) {
+      el.disabled = true;
+      el.title = 'This browser cannot run the Lyra codec.';
+    }
     el.addEventListener('click', () => {
-      state.tierKey = tier.key;
+      state.tierKey = tile.key;
       renderTierSelection();
       scheduleUpdate();
     });
@@ -219,17 +256,39 @@ export function mountGenerator(root: HTMLElement): void {
   }
   renderTierSelection();
 
+  function cardSpec(): { inverted: boolean } {
+    return { inverted: state.inverted };
+  }
+
+  /** The concrete tier the current selection encodes with. */
+  function resolveTier(seconds: number): Tier {
+    if (state.tierKey === 'auto') return pickAutoTier(seconds, cardSpec(), lyraOk);
+    return TIERS.find((t) => t.key === state.tierKey)!;
+  }
+
   function updateTierStats(): void {
     const seconds = state.pcm ? state.trim.endSec - state.trim.startSec : MAX_SECONDS;
     tiersEl.querySelectorAll<HTMLElement>('.tier').forEach((el) => {
+      const statsEl = el.querySelector('[data-stats]')!;
+      if (el.dataset.key === 'auto') {
+        try {
+          statsEl.textContent = `→ ${resolveTier(seconds).label.toLowerCase()} for this clip`;
+        } catch {
+          statsEl.textContent = 'does not fit';
+        }
+        return;
+      }
       const tier = TIERS.find((t) => t.key === el.dataset.key)!;
+      if (tier.codec === 'lyra' && !lyraOk) {
+        statsEl.textContent = 'not available in this browser';
+        return;
+      }
       const bytes = Math.ceil(seconds * tier.bytesPerSec);
       try {
-        const plan = planCard(bytes, { inverted: state.inverted });
-        el.querySelector('[data-stats]')!.textContent =
-          `${plan.chunkCount} codes · ${plan.moduleMm.toFixed(2)}mm dots`;
+        const plan = planCard(bytes, cardSpec());
+        statsEl.textContent = `${plan.chunkCount} codes · ${plan.moduleMm.toFixed(2)}mm dots`;
       } catch {
-        el.querySelector('[data-stats]')!.textContent = 'does not fit';
+        statsEl.textContent = 'does not fit';
       }
     });
   }
@@ -263,15 +322,25 @@ export function mountGenerator(root: HTMLElement): void {
     const seq = ++encodeSeq;
     setError(null);
     try {
-      const tier = TIERS.find((t) => t.key === state.tierKey)!;
+      const seconds = state.trim.endSec - state.trim.startSec;
+      const tier = resolveTier(seconds);
       const pcm = slicePcm(state.pcm, state.trim.startSec, state.trim.endSec);
-      const encoded = await codec2Encode(tier.mode, pcm);
+      const encoded =
+        tier.codec === 'lyra'
+          ? await lyraEncode(pcm)
+          : await codec2Encode(tier.mode, decimate2(pcm));
       if (seq !== encodeSeq) return; // superseded
       const plan = planCard(encoded.length, {
         inverted: state.inverted,
         textLine: state.textLine || undefined,
       });
-      const chunks = splitPayload(encoded, tier.modeId, plan.payloadPerChunk, state.cardId);
+      const chunks = splitPayload(
+        encoded,
+        tier.wireVersion,
+        tier.modeId,
+        plan.payloadPerChunk,
+        state.cardId,
+      );
       const renderInput: RenderInput = {
         plan,
         matrices: chunks.map((c) => chunkMatrix(c, plan.qrVersion)),
@@ -281,7 +350,7 @@ export function mountGenerator(root: HTMLElement): void {
       state.encoded = encoded;
       state.plan = plan;
       state.renderInput = renderInput;
-      renderPreview();
+      renderPreview(tier);
     } catch (e) {
       if (seq === encodeSeq) {
         setError(e instanceof Error ? e.message : 'Something went wrong while building the card.');
@@ -289,7 +358,7 @@ export function mountGenerator(root: HTMLElement): void {
     }
   }
 
-  function renderPreview(): void {
+  function renderPreview(tier: Tier): void {
     const { plan, renderInput } = state;
     if (!plan || !renderInput) return;
     $('card-wrap').style.display = 'block';
@@ -301,8 +370,9 @@ export function mountGenerator(root: HTMLElement): void {
     drawCard(canvas.getContext('2d')!, renderInput, previewPxPerMm * 2);
 
     const seconds = state.trim.endSec - state.trim.startSec;
+    const codecLabel = tier.codec === 'lyra' ? 'Lyra 3.2 kbps' : `Codec 2 ${tier.mode}`;
     $('stats-line').textContent =
-      `${seconds.toFixed(1)}s audio · ${state.encoded!.length} bytes · ` +
+      `${seconds.toFixed(1)}s audio · ${codecLabel} · ${state.encoded!.length} bytes · ` +
       `${plan.chunkCount} data codes (QR v${plan.qrVersion}) + 1 entry code · ` +
       `${plan.moduleMm.toFixed(2)}mm modules · ${plan.grid.cols}×${plan.grid.rows} grid`;
 
