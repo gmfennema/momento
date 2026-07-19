@@ -80,6 +80,33 @@ test('player: scan screen shows guidance when camera is unavailable', async ({ p
   await page.goto('/momento/#p');
   await expect(page.locator('.player')).toContainText('This card holds a sound');
   await page.click('#start');
-  // Headless chromium without fake camera → denied path.
+  // Headless chromium without fake camera → denied path, which still offers photo upload.
   await expect(page.locator('.error')).toContainText('Camera access', { timeout: 10_000 });
+  await expect(page.locator('#upload')).toBeVisible();
+});
+
+test('player: uploading a photo of a generated card rebuilds the audio', async ({ page }) => {
+  // Generate a card and capture its preview as a PNG "photo".
+  await page.goto('/momento/');
+  await page.setInputFiles('#file-input', {
+    name: 'fixture.wav',
+    mimeType: 'audio/wav',
+    buffer: wavFixture(),
+  });
+  await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 20_000 });
+  const dataUrl = await page
+    .locator('#card-preview')
+    .evaluate((c: HTMLCanvasElement) => c.toDataURL('image/png'));
+  const png = Buffer.from(dataUrl.split(',')[1]!, 'base64');
+
+  // Feed that photo into the player's upload entry.
+  await page.goto('/momento/#p');
+  await expect(page.locator('#upload')).toBeVisible();
+  await page.locator('#stage input[type="file"]').setInputFiles({
+    name: 'card.png',
+    mimeType: 'image/png',
+    buffer: png,
+  });
+  await expect(page.locator('#play')).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('#stage')).toContainText('rebuilt entirely from the card');
 });

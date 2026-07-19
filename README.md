@@ -18,7 +18,8 @@ uploads — encoding and decoding happen entirely in the browser.
    or vector SVG, with an invert option for black cards.
 2. **Player** (`/#p`): tap scan → the camera reads codes in any order (multiple
    per frame) with live progress → chunks are reassembled → Codec 2 decodes →
-   Web Audio plays the sound.
+   Web Audio plays the sound. No camera handy (or permission denied)? Upload
+   photo(s) of the card instead — add shots until every square is captured.
 
 ### Quality tiers
 
@@ -69,6 +70,7 @@ keeps resolving.
 - [ ] iPhone Safari: record, generate, download PNG/SVG
 - [ ] iPhone Safari: scan an engraved/printed card end-to-end (`#p`)
 - [ ] Android Chrome: same two flows; torch button appears when supported
+- [ ] Upload a photo of the card (`#p`) — including a HEIC straight from the iPhone camera roll
 - [ ] Inverted (black) card scans
 - [ ] Airplane mode after first visit: generator still loads (PWA offline)
 

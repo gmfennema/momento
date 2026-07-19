@@ -20,6 +20,77 @@ export interface ScannerCallbacks {
   onComplete(): void;
 }
 
+export interface PhotoScanResult {
+  /** Momento chunks decoded from the photo (new or already-seen). */
+  chunks: number;
+  newChunks: number;
+  wrongCard: boolean;
+}
+
+// iOS Safari caps canvas dimensions around 4096; larger photos also make
+// zxing needlessly slow, and card codes stay readable well below this.
+const MAX_PHOTO_DIM = 4096;
+
+async function loadPhoto(file: File): Promise<ImageBitmap | HTMLImageElement> {
+  try {
+    return await createImageBitmap(file);
+  } catch {
+    // Some formats (e.g. HEIC on Safari) decode via <img> but not createImageBitmap.
+    const url = URL.createObjectURL(file);
+    try {
+      const img = new Image();
+      img.decoding = 'async';
+      img.src = url;
+      await img.decode();
+      return img;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+}
+
+/** Read every QR code in an uploaded photo and feed them into the collector. */
+export async function scanPhoto(file: File, collector: ChunkCollector): Promise<PhotoScanResult> {
+  const photo = await loadPhoto(file);
+  const w = photo instanceof HTMLImageElement ? photo.naturalWidth : photo.width;
+  const h = photo instanceof HTMLImageElement ? photo.naturalHeight : photo.height;
+  if (!w || !h) throw new Error('empty image');
+  const scale = Math.min(1, MAX_PHOTO_DIM / Math.max(w, h));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(w * scale));
+  canvas.height = Math.max(1, Math.round(h * scale));
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(photo, 0, 0, canvas.width, canvas.height);
+  if ('close' in photo) photo.close();
+
+  const results = await readBarcodes(ctx.getImageData(0, 0, canvas.width, canvas.height), {
+    formats: ['QRCode'],
+    tryHarder: true,
+    tryInvert: true,
+    maxNumberOfSymbols: 128,
+  });
+
+  const summary: PhotoScanResult = { chunks: 0, newChunks: 0, wrongCard: false };
+  for (const r of results) {
+    let bytes: Uint8Array;
+    try {
+      bytes = base45Decode(r.text);
+    } catch {
+      continue; // entry QR / foreign code
+    }
+    const outcome = collector.add(bytes);
+    if (outcome === 'new') {
+      summary.chunks++;
+      summary.newChunks++;
+    } else if (outcome === 'duplicate') {
+      summary.chunks++;
+    } else if (outcome === 'wrong-card') {
+      summary.wrongCard = true;
+    }
+  }
+  return summary;
+}
+
 export interface ScannerHandle {
   video: HTMLVideoElement;
   collector: ChunkCollector;
