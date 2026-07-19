@@ -4,10 +4,14 @@
 // self-describing:
 //
 //   offset 0    magic 0x4D ('M') — rejects foreign QR codes
-//   offset 1    bits 7–5 format version (0) · bits 4–2 codec mode id · bits 1–0 reserved
+//   offset 1    bits 7–5 format version · bits 4–2 codec mode id · bits 1–0 reserved
 //   offset 2–3  cardId, random u16 LE — prevents mixing chunks of two cards
 //   offset 4    chunkIndex (u8, 0-based)
 //   offset 5    totalChunks (u8, ≥1)
+//
+// The format version selects the codec (and its mode table):
+//   version 0 — Codec 2, 8 kHz; mode id indexes MODE_BY_ID
+//   version 1 — Lyra V2, 16 kHz; mode id 0 = 3.2 kbps (others reserved)
 //
 // No CRC/length field: QR's internal Reed-Solomon already guarantees per-code
 // integrity, and the total payload length is the sum of received payload
@@ -15,12 +19,17 @@
 
 export const MAGIC = 0x4d;
 export const HEADER_BYTES = 6;
-export const FORMAT_VERSION = 0;
+export const WIRE_CODEC2 = 0;
+export const WIRE_LYRA = 1;
+const KNOWN_VERSIONS: readonly number[] = [WIRE_CODEC2, WIRE_LYRA];
 
 /** Codec2 mode ids as carried on the wire. Only a subset is offered for encoding. */
 export const MODE_BY_ID = ['3200', '2400', '1600', '1400', '1300', '1200', '700C', '450'] as const;
 export type Codec2Mode = (typeof MODE_BY_ID)[number];
 export type CodecModeId = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+/** The one Lyra mode currently defined for wire version 1. */
+export const LYRA_MODE_3200: CodecModeId = 0;
 
 export interface ChunkHeader {
   version: number;
@@ -58,7 +67,7 @@ export function decodeChunk(bytes: Uint8Array): { header: ChunkHeader; payload: 
     chunkIndex: bytes[4]!,
     totalChunks: bytes[5]!,
   };
-  if (header.version !== FORMAT_VERSION) throw new NotAMomentoChunk('unknown format version');
+  if (!KNOWN_VERSIONS.includes(header.version)) throw new NotAMomentoChunk('unknown format version');
   if (header.totalChunks < 1 || header.chunkIndex >= header.totalChunks) {
     throw new NotAMomentoChunk('inconsistent chunk counts');
   }
@@ -74,6 +83,7 @@ export function randomCardId(): number {
 /** Split compressed audio into ready-to-encode chunks (header included). */
 export function splitPayload(
   data: Uint8Array,
+  version: number,
   modeId: CodecModeId,
   maxPayloadPerChunk: number,
   cardId: number = randomCardId(),
@@ -85,10 +95,7 @@ export function splitPayload(
   for (let i = 0; i < totalChunks; i++) {
     const payload = data.subarray(i * maxPayloadPerChunk, (i + 1) * maxPayloadPerChunk);
     chunks.push(
-      encodeChunk(
-        { version: FORMAT_VERSION, modeId, cardId, chunkIndex: i, totalChunks },
-        payload,
-      ),
+      encodeChunk({ version, modeId, cardId, chunkIndex: i, totalChunks }, payload),
     );
   }
   return chunks;
@@ -99,6 +106,7 @@ export type AddResult = 'new' | 'duplicate' | 'wrong-card' | 'not-momento';
 /** Player-side accumulator. Adopts the first card it sees; order-independent. */
 export class ChunkCollector {
   private cardId: number | null = null;
+  private version: number | null = null;
   private modeId: CodecModeId | null = null;
   private total: number | null = null;
   private payloads = new Map<number, Uint8Array>();
@@ -114,9 +122,14 @@ export class ChunkCollector {
     const { header, payload } = decoded;
     if (this.cardId === null) {
       this.cardId = header.cardId;
+      this.version = header.version;
       this.modeId = header.modeId;
       this.total = header.totalChunks;
-    } else if (header.cardId !== this.cardId || header.totalChunks !== this.total) {
+    } else if (
+      header.cardId !== this.cardId ||
+      header.version !== this.version ||
+      header.totalChunks !== this.total
+    ) {
       this.wrongCardHits++;
       return 'wrong-card';
     }
@@ -137,8 +150,14 @@ export class ChunkCollector {
     return this.total !== null && this.payloads.size === this.total;
   }
 
-  assemble(): { modeId: CodecModeId; data: Uint8Array } {
-    if (!this.complete || this.total === null || this.modeId === null) {
+  /** Wire version of the adopted card, or null before the first chunk. Lets
+   * the player start warming up the right codec while scanning continues. */
+  get wireVersion(): number | null {
+    return this.version;
+  }
+
+  assemble(): { version: number; modeId: CodecModeId; data: Uint8Array } {
+    if (!this.complete || this.total === null || this.modeId === null || this.version === null) {
       throw new Error('collector incomplete');
     }
     let len = 0;
@@ -150,11 +169,12 @@ export class ChunkCollector {
       data.set(p, o);
       o += p.length;
     }
-    return { modeId: this.modeId, data };
+    return { version: this.version, modeId: this.modeId, data };
   }
 
   reset(): void {
     this.cardId = null;
+    this.version = null;
     this.modeId = null;
     this.total = null;
     this.payloads.clear();

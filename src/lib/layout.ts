@@ -4,8 +4,16 @@
 // MAXIMIZES physical module size (the dominant factor in whether an engraved
 // card scans), and report the numbers honestly so the UI can warn the maker.
 
-import { base45Length, maxBytesForChars } from './base45';
-import { HEADER_BYTES, type Codec2Mode, type CodecModeId } from './chunk';
+import { maxBytesForChars } from './base45';
+import {
+  HEADER_BYTES,
+  LYRA_MODE_3200,
+  WIRE_CODEC2,
+  WIRE_LYRA,
+  type Codec2Mode,
+  type CodecModeId,
+} from './chunk';
+import { LYRA_BYTES_PER_SEC } from './lyra';
 
 /** Standard US business card. */
 export const CARD_W_MM = 88.9;
@@ -23,19 +31,24 @@ export function alnumCapacityL(version: number): number {
   return c;
 }
 
-export interface Tier {
+interface TierBase {
   key: 'compact' | 'balanced' | 'best';
-  mode: Codec2Mode;
+  wireVersion: number;
   modeId: CodecModeId;
   bytesPerSec: number;
   label: string;
   blurb: string;
 }
 
+export type Tier = TierBase &
+  ({ codec: 'codec2'; mode: Codec2Mode } | { codec: 'lyra' });
+
 export const TIERS: readonly Tier[] = [
   {
     key: 'compact',
+    codec: 'codec2',
     mode: '700C',
+    wireVersion: WIRE_CODEC2,
     modeId: 6,
     bytesPerSec: 100,
     label: 'Compact',
@@ -43,21 +56,64 @@ export const TIERS: readonly Tier[] = [
   },
   {
     key: 'balanced',
+    codec: 'codec2',
     mode: '1600',
+    wireVersion: WIRE_CODEC2,
     modeId: 2,
     bytesPerSec: 200,
     label: 'Balanced',
-    blurb: 'Good speech quality with comfortably scannable codes.',
+    blurb: 'Decent speech quality with comfortably scannable codes.',
   },
   {
     key: 'best',
-    mode: '3200',
-    modeId: 0,
-    bytesPerSec: 400,
+    codec: 'lyra',
+    wireVersion: WIRE_LYRA,
+    modeId: LYRA_MODE_3200,
+    bytesPerSec: LYRA_BYTES_PER_SEC,
     label: 'Best',
-    blurb: 'Clearest voice, but a dense card — needs precise engraving.',
+    blurb: 'Natural, clear voice (Lyra neural codec). Denser card; playback needs a modern phone.',
   },
 ] as const;
+
+/** Conservative payload estimate for planning before the real encode exists.
+ * Codec 2 output wobbles a few bytes around the nominal rate and the Lyra
+ * path pads to whole 20 ms frames (< 16 bytes either way), so plan with slack
+ * rather than let the real encode land one chunk denser than the tier
+ * decision assumed. */
+export function estimatePayloadBytes(seconds: number, tier: Tier): number {
+  return Math.ceil(seconds * tier.bytesPerSec) + 16;
+}
+
+/** The auto tier refuses to go denser than this. 0.25 mm is where engravers
+ * and phone cameras start genuinely failing (the hard warning); the softer
+ * 0.30 mm comfort band is still allowed — those cards scan fine when cleanly
+ * engraved, and the UI keeps its warning. */
+export const AUTO_MODULE_FLOOR_MM = 0.25;
+
+/** Pick the highest-quality tier whose card keeps modules at a reliably
+ * scannable size for this clip length — i.e. spend the card's real capacity
+ * instead of a fixed preset. Falls back to the least dense card when even the
+ * compact tier is below the floor. */
+export function pickAutoTier(
+  seconds: number,
+  spec: CardSpec,
+  allowLyra: boolean,
+): Tier {
+  let fallback: { tier: Tier; moduleMm: number } | null = null;
+  for (const tier of [...TIERS].reverse()) {
+    if (tier.codec === 'lyra' && !allowLyra) continue;
+    let plan: CardPlan;
+    try {
+      plan = planCard(estimatePayloadBytes(seconds, tier), spec);
+    } catch {
+      continue; // doesn't fit on the card at all
+    }
+    if (plan.moduleMm >= AUTO_MODULE_FLOOR_MM) return tier;
+    if (!fallback || plan.moduleMm > fallback.moduleMm) fallback = { tier, moduleMm: plan.moduleMm };
+  }
+  if (!fallback) throw new Error('audio too large to fit on a card');
+  return fallback.tier;
+}
 
 export type LayoutWarning = 'module-below-0.30' | 'module-below-0.25' | 'text-dropped';
 

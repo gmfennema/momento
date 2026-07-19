@@ -46,10 +46,23 @@ describe('end-to-end card pipeline', () => {
     for (const inverted of tier.key === 'balanced' ? [false, true] : [false]) {
       it(`${tier.key}${inverted ? ' (inverted)' : ''}: audio → card image → scanned → audio`, async () => {
         const pcm = synthPcm(10);
-        const bits = await codec2Encode(tier.mode, pcm);
+        // The Lyra wasm needs a browser (threads); its physical contract is
+        // proven here with a payload of the exact size a 10s clip encodes to,
+        // and the real codec is exercised in the Playwright suite.
+        let bits: Uint8Array;
+        if (tier.codec === 'codec2') {
+          bits = await codec2Encode(tier.mode, pcm);
+        } else {
+          bits = new Uint8Array(10 * tier.bytesPerSec);
+          let seed = 0x12345678;
+          for (let i = 0; i < bits.length; i++) {
+            seed = (seed * 1103515245 + 12345) >>> 0;
+            bits[i] = seed >>> 24;
+          }
+        }
 
         const plan = planCard(bits.length, { inverted, textLine: 'Momento Test' });
-        const chunks = splitPayload(bits, tier.modeId, plan.payloadPerChunk, 0xc0de);
+        const chunks = splitPayload(bits, tier.wireVersion, tier.modeId, plan.payloadPerChunk, 0xc0de);
         expect(chunks.length).toBe(plan.chunkCount);
 
         const input: RenderInput = {
@@ -77,13 +90,16 @@ describe('end-to-end card pipeline', () => {
         expect(collector.progress.missing).toEqual([]);
         expect(collector.complete).toBe(true);
 
-        const { modeId, data } = collector.assemble();
+        const { version, modeId, data } = collector.assemble();
+        expect(version).toBe(tier.wireVersion);
         expect(modeId).toBe(tier.modeId);
         expect(data).toEqual(new Uint8Array(bits));
 
-        const out = await codec2Decode(tier.mode, data);
-        expect(Math.abs(out.length - pcm.length)).toBeLessThanOrEqual(800);
-        expect(rmsEnergy(out)).toBeGreaterThan(100);
+        if (tier.codec === 'codec2') {
+          const out = await codec2Decode(tier.mode, data);
+          expect(Math.abs(out.length - pcm.length)).toBeLessThanOrEqual(800);
+          expect(rmsEnergy(out)).toBeGreaterThan(100);
+        }
       }, 120_000);
     }
   }

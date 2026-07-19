@@ -3,8 +3,9 @@
 // States: IDLE → SCANNING | PHOTOS → DECODING → READY → PLAYING (+ CAMERA_DENIED).
 
 import { playPcm, type Playback } from '../lib/audio';
-import { codec2Decode } from '../lib/codec2';
-import { ChunkCollector, MODE_BY_ID } from '../lib/chunk';
+import { codec2Decode, CODEC2_SAMPLE_RATE } from '../lib/codec2';
+import { lyraDecode, lyraSupported, warmUpLyra, LYRA_SAMPLE_RATE } from '../lib/lyra';
+import { ChunkCollector, LYRA_MODE_3200, MODE_BY_ID, WIRE_LYRA } from '../lib/chunk';
 import { scanPhoto, startScanner, type ScannerHandle } from './scanner';
 
 export function mountPlayer(root: HTMLElement): void {
@@ -19,6 +20,7 @@ export function mountPlayer(root: HTMLElement): void {
   let scanner: ScannerHandle | null = null;
   let playback: Playback | null = null;
   let pcm: Int16Array | null = null;
+  let pcmRate = CODEC2_SAMPLE_RATE;
 
   function makePhotoInput(onFiles: (files: File[]) => void): HTMLInputElement {
     const input = document.createElement('input');
@@ -35,6 +37,9 @@ export function mountPlayer(root: HTMLElement): void {
   }
 
   function updateProgress(count: HTMLElement, strip: HTMLElement, collector: ChunkCollector): void {
+    // The first chunk names the codec — fetch the Lyra wasm + models (~7 MB)
+    // only for cards that actually use it, overlapping the remaining scan.
+    if (collector.wireVersion === WIRE_LYRA) warmUpLyra();
     const { got, total, missing } = collector.progress;
     count.textContent = total ? `${got} of ${total}` : 'Looking…';
     if (total && strip.childElementCount !== total) {
@@ -206,8 +211,28 @@ export function mountPlayer(root: HTMLElement): void {
     scanner = null;
     stage.innerHTML = `<p class="hint">Rebuilding the audio from the card…</p>`;
     try {
-      const { modeId, data } = collector.assemble();
-      pcm = await codec2Decode(MODE_BY_ID[modeId]!, data);
+      const { version, modeId, data } = collector.assemble();
+      if (version === WIRE_LYRA) {
+        if (modeId !== LYRA_MODE_3200) {
+          // A reserved Lyra mode from a future generator — decoding it as
+          // 3.2 kbps would play garbage, so be honest instead.
+          stage.innerHTML = `<div class="error">This card was made with a newer version of Momento — refresh this page and try again.</div>`;
+          setTimeout(showIdle, 4000);
+          return;
+        }
+        if (!lyraSupported()) {
+          // Most likely the first-ever visit before the isolation service
+          // worker kicked in — a reload fixes that; a truly old browser won't.
+          stage.innerHTML = `<div class="error">This card's audio needs one more page reload to unlock — reload and scan again. If it keeps happening, update your browser.</div>`;
+          setTimeout(showIdle, 5000);
+          return;
+        }
+        pcm = await lyraDecode(data);
+        pcmRate = LYRA_SAMPLE_RATE;
+      } else {
+        pcm = await codec2Decode(MODE_BY_ID[modeId]!, data);
+        pcmRate = CODEC2_SAMPLE_RATE;
+      }
       showReady();
     } catch {
       stage.innerHTML = `<div class="error">Couldn't rebuild the audio — please rescan the card.</div>`;
@@ -216,7 +241,7 @@ export function mountPlayer(root: HTMLElement): void {
   }
 
   function showReady(): void {
-    const seconds = pcm ? (pcm.length / 8000).toFixed(1) : '?';
+    const seconds = pcm ? (pcm.length / pcmRate).toFixed(1) : '?';
     stage.innerHTML = `
       <button class="big-play" id="play">▶</button>
       <p class="hint">${seconds}s of audio, rebuilt entirely from the card.</p>
@@ -227,7 +252,7 @@ export function mountPlayer(root: HTMLElement): void {
       if (!pcm) return;
       playback?.stop();
       playBtn.textContent = '…';
-      playback = playPcm(pcm);
+      playback = playPcm(pcm, pcmRate);
       void playback.done.then(() => {
         playBtn.textContent = '▶';
       });

@@ -2,8 +2,7 @@
 // clip goes on the card. Dragging inside the window moves it; dragging near an
 // edge resizes it.
 
-import { CODEC2_SAMPLE_RATE } from '../lib/codec2';
-import { drawWaveform, MAX_SECONDS } from '../lib/audio';
+import { drawWaveform, MAX_SECONDS, PCM_SAMPLE_RATE } from '../lib/audio';
 
 export interface TrimState {
   startSec: number;
@@ -15,10 +14,10 @@ export function attachTrim(
   pcm: Int16Array,
   onChange: (t: TrimState) => void,
 ): TrimState {
-  const durationSec = pcm.length / CODEC2_SAMPLE_RATE;
+  const durationSec = pcm.length / PCM_SAMPLE_RATE;
   const state: TrimState = { startSec: 0, endSec: Math.min(durationSec, MAX_SECONDS) };
 
-  const redraw = () => drawWaveform(canvas, pcm, [state.startSec, state.endSec]);
+  const redraw = () => drawWaveform(canvas, pcm, PCM_SAMPLE_RATE, [state.startSec, state.endSec]);
   redraw();
 
   if (durationSec <= MAX_SECONDS) return state; // nothing to trim
