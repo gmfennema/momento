@@ -398,7 +398,6 @@ export function mountGenerator(root: HTMLElement): void {
         ),
         inverted: state.inverted,
         textLine: state.textLine.trim() || undefined,
-        durationSec: seconds,
       };
       renderPreview(tier);
     } catch (e) {

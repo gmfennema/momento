@@ -1,15 +1,17 @@
 // Card FRONT rendering — the human-facing side. Where the back is a dense
-// machine-readable QR mosaic, the front is the keepsake: the Momento brand
-// mark, the clip's waveform as a mirrored bar chart, the owner's name line,
-// and a nudge to flip the card over. Same pattern as render.ts: one geometry
-// pass feeding both an SVG string (vector, print/laser) and a canvas drawer
-// (preview + high-DPI PNG).
+// machine-readable QR mosaic, the front is the keepsake: a letterspaced
+// wordmark, the clip's waveform as a fine mirrored bar chart, the owner's
+// name line, and a nudge to flip the card over. Strictly monochrome — one
+// ink on one stock — so the same artwork prints, foils, or laser-engraves.
+// Same pattern as render.ts: one geometry pass feeding both an SVG string
+// (vector, print/laser) and a canvas drawer (preview + high-DPI PNG).
 
 import { CARD_W_MM, CARD_H_MM } from './layout';
 
-/** Bars across the waveform. Sized so bars stay chunky (≈0.65 mm) on a
- * standard card — thin hairlines disappear in print and engraving. */
-export const FRONT_BAR_COUNT = 64;
+/** Bars across the waveform. Enough for a fine, engraved-line texture while
+ * keeping each bar ≈0.4 mm — comfortably above what printers and laser
+ * engravers hold. */
+export const FRONT_BAR_COUNT = 72;
 
 /** Bars never collapse to nothing: silence renders as a dotted baseline. */
 export const MIN_BAR = 0.045;
@@ -20,8 +22,6 @@ export interface FrontInput {
   inverted: boolean;
   /** owner's name / caption, shown under the waveform */
   textLine?: string;
-  /** clip length, shown next to the brand mark */
-  durationSec?: number;
   widthMm?: number;
   heightMm?: number;
 }
@@ -55,17 +55,18 @@ export function computeWaveformBars(pcm: Int16Array, count: number): number[] {
 export interface FrontColors {
   bg: string;
   ink: string;
-  accent: string;
-  muted: string;
 }
 
-/** Brand palette in print-safe pairs: deep green on white stock, the bright
- * UI green on black stock (matches the app's --accent). */
+/** One ink, one stock: black on white, or white on black for dark cards. */
 function palette(inverted: boolean): FrontColors {
   return inverted
-    ? { bg: '#0e1012', ink: '#f0f4f2', accent: '#5eeaa5', muted: '#8b959d' }
-    : { bg: '#ffffff', ink: '#16181a', accent: '#2e8f63', muted: '#7d8790' };
+    ? { bg: '#000000', ink: '#ffffff' }
+    : { bg: '#ffffff', ink: '#000000' };
 }
+
+/** Secondary text (wordmark, hint) prints as a tone of the same ink. */
+const SECONDARY_OPACITY = 0.55;
+const BASELINE_OPACITY = 0.25;
 
 interface TextSpec {
   xMm: number;
@@ -81,75 +82,72 @@ export interface FrontLayout {
   /** rounded bars: [x, y, w, h] in mm, corner radius w/2 */
   bars: Array<[number, number, number, number]>;
   baseline: { x1Mm: number; x2Mm: number; yMm: number; strokeMm: number };
-  brandDot: { cxMm: number; cyMm: number; rMm: number };
-  brandText: TextSpec;
-  duration?: TextSpec;
+  wordmark: TextSpec & { letterSpacingMm: number };
   name?: TextSpec;
   hint: TextSpec & { letterSpacingMm: number };
+}
+
+/** Letterspaced, middle-anchored text renders with a trailing space after the
+ * last glyph; nudging the anchor by half a space re-centers it optically. */
+function centeredX(widthMm: number, letterSpacingMm: number): number {
+  return widthMm / 2 + letterSpacingMm / 2;
 }
 
 export function layoutFront(input: FrontInput): FrontLayout {
   const W = input.widthMm ?? CARD_W_MM;
   const H = input.heightMm ?? CARD_H_MM;
-  const margin = W * 0.079; // ≈7 mm on a standard card
+  const margin = W * 0.09; // ≈8 mm on a standard card
   const innerW = W - 2 * margin;
   const name = input.textLine?.trim();
 
-  // Waveform: mirrored bars about a center line. With a name line the wave
-  // gives up a little height and rides higher.
-  const waveCenterY = name ? H * 0.455 : H * 0.48;
-  const halfMax = name ? H * 0.17 : H * 0.2;
+  // Waveform: fine mirrored bars about a hairline center rule. With a name
+  // line the wave gives up a little height and rides higher.
+  const waveCenterY = name ? H * 0.492 : H * 0.512;
+  const halfMax = name ? H * 0.154 : H * 0.181;
   const pitch = innerW / Math.max(1, input.bars.length);
-  const barW = pitch * 0.55;
+  const barW = pitch * 0.42;
   const bars: Array<[number, number, number, number]> = input.bars.map((v, i) => {
     const h = Math.max(barW, Math.min(1, v) * 2 * halfMax);
     return [margin + i * pitch + (pitch - barW) / 2, waveCenterY - h / 2, barW, h];
   });
 
-  const brandFont = H * 0.068;
-  const brandY = margin * 0.55 + brandFont / 2 + 1.2;
-  const dotR = brandFont * 0.32;
+  const wordmarkFont = H * 0.057;
+  const wordmarkLs = wordmarkFont * 0.42;
 
-  const nameBase = H * 0.075;
-  // Long names shrink instead of overflowing (rough 0.58·em glyph width).
+  const nameBase = H * 0.076;
+  // Long names shrink instead of overflowing (rough 0.52·em serif glyph width).
   const nameFont = name
-    ? Math.min(nameBase, (innerW * 0.92) / (0.58 * Math.max(1, name.length)))
+    ? Math.min(nameBase, (innerW * 0.85) / (0.52 * Math.max(1, name.length)))
     : 0;
+
+  const hintFont = H * 0.0325;
 
   return {
     widthMm: W,
     heightMm: H,
     colors: palette(input.inverted),
     bars,
-    baseline: { x1Mm: margin, x2Mm: W - margin, yMm: waveCenterY, strokeMm: 0.12 },
-    brandDot: { cxMm: margin + dotR, cyMm: brandY, rMm: dotR },
-    brandText: {
-      xMm: margin + dotR * 2 + brandFont * 0.35,
-      yMm: brandY,
-      fontMm: brandFont,
-      text: 'Momento',
+    baseline: { x1Mm: margin, x2Mm: W - margin, yMm: waveCenterY, strokeMm: 0.1 },
+    wordmark: {
+      xMm: centeredX(W, wordmarkLs),
+      yMm: H * 0.187,
+      fontMm: wordmarkFont,
+      letterSpacingMm: wordmarkLs,
+      text: 'MOMENTO',
     },
-    duration:
-      input.durationSec !== undefined
-        ? {
-            xMm: W - margin,
-            yMm: brandY,
-            fontMm: brandFont * 0.72,
-            text: `${input.durationSec.toFixed(1)}s`,
-          }
-        : undefined,
-    name: name ? { xMm: W / 2, yMm: H * 0.78, fontMm: nameFont, text: name } : undefined,
+    name: name ? { xMm: W / 2, yMm: H * 0.783, fontMm: nameFont, text: name } : undefined,
     hint: {
-      xMm: W / 2,
-      yMm: H - margin * 0.62,
-      fontMm: H * 0.042,
-      letterSpacingMm: H * 0.042 * 0.28,
+      xMm: centeredX(W, hintFont * 0.33),
+      yMm: H * 0.898,
+      fontMm: hintFont,
+      letterSpacingMm: hintFont * 0.33,
       text: 'SCAN THE BACK TO LISTEN',
     },
   };
 }
 
-const FONT_STACK = 'Helvetica, Arial, sans-serif';
+/** Classic serif stack for the type; the waveform carries the modernity. */
+const FONT_SERIF = "Georgia, 'Times New Roman', serif";
 
 function escapeXml(s: string): string {
   return s.replace(/[<>&"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -167,42 +165,34 @@ export function renderFrontSvg(input: FrontInput): string {
     `<rect width="${L.widthMm}" height="${L.heightMm}" fill="${c.bg}"/>`,
     `<line x1="${fmt(L.baseline.x1Mm)}" y1="${fmt(L.baseline.yMm)}" ` +
       `x2="${fmt(L.baseline.x2Mm)}" y2="${fmt(L.baseline.yMm)}" ` +
-      `stroke="${c.muted}" stroke-width="${L.baseline.strokeMm}" opacity="0.35"/>`,
+      `stroke="${c.ink}" stroke-width="${L.baseline.strokeMm}" opacity="${BASELINE_OPACITY}"/>`,
   );
   for (const [x, y, w, h] of L.bars) {
     parts.push(
       `<rect x="${fmt(x)}" y="${fmt(y)}" width="${fmt(w)}" height="${fmt(h)}" ` +
-        `rx="${fmt(w / 2)}" fill="${c.accent}"/>`,
+        `rx="${fmt(w / 2)}" fill="${c.ink}"/>`,
     );
   }
   parts.push(
-    `<circle cx="${fmt(L.brandDot.cxMm)}" cy="${fmt(L.brandDot.cyMm)}" ` +
-      `r="${fmt(L.brandDot.rMm)}" fill="${c.accent}"/>`,
-    text(L.brandText, { fill: c.ink, weight: 700, anchor: 'start' }),
+    text(L.wordmark, { opacity: SECONDARY_OPACITY, letterSpacingMm: L.wordmark.letterSpacingMm }),
   );
-  if (L.duration) parts.push(text(L.duration, { fill: c.muted, anchor: 'end' }));
-  if (L.name) parts.push(text(L.name, { fill: c.ink, weight: 600, anchor: 'middle' }));
+  if (L.name) parts.push(text(L.name, {}));
   parts.push(
-    text(L.hint, {
-      fill: c.muted,
-      weight: 600,
-      anchor: 'middle',
-      letterSpacingMm: L.hint.letterSpacingMm,
-    }),
+    text(L.hint, { opacity: SECONDARY_OPACITY, letterSpacingMm: L.hint.letterSpacingMm }),
   );
   parts.push('</svg>');
   return parts.join('\n');
 
   function text(
     t: TextSpec,
-    opts: { fill: string; anchor: string; weight?: number; letterSpacingMm?: number },
+    opts: { opacity?: number; letterSpacingMm?: number },
   ): string {
     return (
-      `<text x="${fmt(t.xMm)}" y="${fmt(t.yMm)}" font-family="${FONT_STACK}" ` +
+      `<text x="${fmt(t.xMm)}" y="${fmt(t.yMm)}" font-family="${FONT_SERIF}" ` +
       `font-size="${fmt(t.fontMm)}"` +
-      (opts.weight ? ` font-weight="${opts.weight}"` : '') +
       (opts.letterSpacingMm ? ` letter-spacing="${fmt(opts.letterSpacingMm)}"` : '') +
-      ` text-anchor="${opts.anchor}" dominant-baseline="middle" fill="${opts.fill}">` +
+      (opts.opacity !== undefined ? ` opacity="${opts.opacity}"` : '') +
+      ` text-anchor="middle" dominant-baseline="middle" fill="${c.ink}">` +
       `${escapeXml(t.text)}</text>`
     );
   }
@@ -223,8 +213,8 @@ export function drawFront(
   ctx.fillRect(0, 0, Math.round(px(L.widthMm)), Math.round(px(L.heightMm)));
 
   ctx.save();
-  ctx.globalAlpha = 0.35;
-  ctx.strokeStyle = c.muted;
+  ctx.globalAlpha = BASELINE_OPACITY;
+  ctx.strokeStyle = c.ink;
   ctx.lineWidth = Math.max(1, px(L.baseline.strokeMm));
   ctx.beginPath();
   ctx.moveTo(px(L.baseline.x1Mm), px(L.baseline.yMm));
@@ -232,42 +222,31 @@ export function drawFront(
   ctx.stroke();
   ctx.restore();
 
-  ctx.fillStyle = c.accent;
+  ctx.fillStyle = c.ink;
   ctx.beginPath();
   for (const [x, y, w, h] of L.bars) roundedRectPath(ctx, px(x), px(y), px(w), px(h), px(w) / 2);
   ctx.fill();
 
-  ctx.beginPath();
-  ctx.arc(px(L.brandDot.cxMm), px(L.brandDot.cyMm), px(L.brandDot.rMm), 0, Math.PI * 2);
-  ctx.fill();
-
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = c.ink;
-  ctx.textAlign = 'left';
-  ctx.font = `700 ${px(L.brandText.fontMm)}px ${FONT_STACK}`;
-  ctx.fillText(L.brandText.text, px(L.brandText.xMm), px(L.brandText.yMm));
-
-  if (L.duration) {
-    ctx.fillStyle = c.muted;
-    ctx.textAlign = 'right';
-    ctx.font = `${px(L.duration.fontMm)}px ${FONT_STACK}`;
-    ctx.fillText(L.duration.text, px(L.duration.xMm), px(L.duration.yMm));
-  }
-  if (L.name) {
-    ctx.fillStyle = c.ink;
-    ctx.textAlign = 'center';
-    ctx.font = `600 ${px(L.name.fontMm)}px ${FONT_STACK}`;
-    ctx.fillText(L.name.text, px(L.name.xMm), px(L.name.yMm), px(L.widthMm) * 0.92);
-  }
-
-  ctx.fillStyle = c.muted;
   ctx.textAlign = 'center';
-  ctx.font = `600 ${px(L.hint.fontMm)}px ${FONT_STACK}`;
+
   // letterSpacing is a newer canvas property; browsers without it ignore the
-  // assignment and the hint just renders a touch tighter.
+  // assignment and the letterspaced lines just render a touch tighter.
+  ctx.save();
+  ctx.globalAlpha = SECONDARY_OPACITY;
+  ctx.font = `${px(L.wordmark.fontMm)}px ${FONT_SERIF}`;
+  ctx.letterSpacing = `${px(L.wordmark.letterSpacingMm)}px`;
+  ctx.fillText(L.wordmark.text, px(L.wordmark.xMm), px(L.wordmark.yMm));
+  ctx.font = `${px(L.hint.fontMm)}px ${FONT_SERIF}`;
   ctx.letterSpacing = `${px(L.hint.letterSpacingMm)}px`;
   ctx.fillText(L.hint.text, px(L.hint.xMm), px(L.hint.yMm));
   ctx.letterSpacing = '0px';
+  ctx.restore();
+
+  if (L.name) {
+    ctx.font = `${px(L.name.fontMm)}px ${FONT_SERIF}`;
+    ctx.fillText(L.name.text, px(L.name.xMm), px(L.name.yMm), px(L.widthMm) * 0.85);
+  }
 }
 
 function roundedRectPath(
