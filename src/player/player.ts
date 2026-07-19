@@ -1,7 +1,7 @@
 // Player (consumer-facing) page: scan the whole card, rebuild the audio, play.
 // States: IDLE → SCANNING → DECODING → READY → PLAYING (+ CAMERA_DENIED).
 
-import { audioContext, playPcm, type Playback } from '../lib/audio';
+import { playPcm, type Playback } from '../lib/audio';
 import { codec2Decode } from '../lib/codec2';
 import { MODE_BY_ID } from '../lib/chunk';
 import { startScanner, type ScannerHandle } from './scanner';
@@ -25,7 +25,6 @@ export function mountPlayer(root: HTMLElement): void {
       <p class="hint">Point your camera at the card and pan slowly across all the squares.</p>
     `;
     stage.querySelector('#start')!.addEventListener('click', () => {
-      audioContext(); // unlock audio inside the user gesture
       void showScanning();
     });
   }
