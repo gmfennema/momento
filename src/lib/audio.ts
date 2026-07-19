@@ -5,13 +5,6 @@ import { CODEC2_SAMPLE_RATE } from './codec2';
 
 export const MAX_SECONDS = 10;
 
-let sharedCtx: AudioContext | null = null;
-export function audioContext(): AudioContext {
-  sharedCtx ??= new AudioContext();
-  void sharedCtx.resume();
-  return sharedCtx;
-}
-
 /** Decode any audio blob/file and resample to 8 kHz mono Int16 PCM. */
 export async function fileToPcm8k(file: Blob): Promise<{ pcm: Int16Array; durationSec: number }> {
   const arrayBuf = await file.arrayBuffer();
@@ -48,20 +41,60 @@ export interface Playback {
   done: Promise<void>;
 }
 
-/** Play 8 kHz PCM. Call from a user gesture the first time (autoplay policy). */
+/** Encode 16-bit mono PCM as a WAV blob. */
+export function pcmToWavBlob(pcm: Int16Array, sampleRate = CODEC2_SAMPLE_RATE): Blob {
+  const header = new ArrayBuffer(44);
+  const v = new DataView(header);
+  const writeTag = (offset: number, tag: string): void => {
+    for (let i = 0; i < tag.length; i++) v.setUint8(offset + i, tag.charCodeAt(i));
+  };
+  const dataLen = pcm.length * 2;
+  writeTag(0, 'RIFF');
+  v.setUint32(4, 36 + dataLen, true);
+  writeTag(8, 'WAVE');
+  writeTag(12, 'fmt ');
+  v.setUint32(16, 16, true); // fmt chunk size
+  v.setUint16(20, 1, true); // PCM
+  v.setUint16(22, 1, true); // mono
+  v.setUint32(24, sampleRate, true);
+  v.setUint32(28, sampleRate * 2, true); // byte rate
+  v.setUint16(32, 2, true); // block align
+  v.setUint16(34, 16, true); // bits per sample
+  writeTag(36, 'data');
+  v.setUint32(40, dataLen, true);
+  const samples = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength).slice();
+  return new Blob([header, samples], { type: 'audio/wav' });
+}
+
+/** Play 8 kHz PCM. Call from a user gesture the first time (autoplay policy).
+ * Uses an <audio> element rather than Web Audio: iOS mutes Web Audio while the
+ * ringer switch is on silent and suspends AudioContexts around camera use, but
+ * media-element playback is exempt from both. */
 export function playPcm(pcm: Int16Array): Playback {
-  const ctx = audioContext();
-  const buffer = ctx.createBuffer(1, pcm.length, CODEC2_SAMPLE_RATE);
-  const ch = buffer.getChannelData(0);
-  for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i]! / 32768;
-  const src = ctx.createBufferSource();
-  src.buffer = buffer;
-  src.connect(ctx.destination);
+  const url = URL.createObjectURL(pcmToWavBlob(pcm));
+  const audio = new Audio(url);
+  audio.setAttribute('playsinline', '');
+  let finished = false;
+  let settle!: () => void;
   const done = new Promise<void>((resolve) => {
-    src.onended = () => resolve();
+    settle = resolve;
   });
-  src.start();
-  return { stop: () => src.stop(), done };
+  const finish = (): void => {
+    if (finished) return;
+    finished = true;
+    URL.revokeObjectURL(url);
+    settle();
+  };
+  audio.onended = finish;
+  audio.onerror = finish;
+  void audio.play().catch(finish);
+  return {
+    stop: () => {
+      audio.pause();
+      finish();
+    },
+    done,
+  };
 }
 
 export function drawWaveform(
