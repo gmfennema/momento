@@ -1,0 +1,20 @@
+# Guard against PRs merging into a stale feature branch instead of main.
+# This repo's Pages deploy only fires on pushes to main, so a PR merged
+# anywhere else silently never ships (it happened twice: PR #1 and #3).
+name: PR base check
+
+on:
+  pull_request:
+    types: [opened, reopened, edited, synchronize]
+
+jobs:
+  base-is-main:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless the PR targets main
+        if: github.base_ref != 'main'
+        run: |
+          echo "::error::This PR targets '${GITHUB_BASE_REF}', not 'main'. Merging it will NOT deploy. Edit the PR and change the base branch to 'main'."
+          exit 1
+      - name: Base is main
+        run: echo "Base branch is main — good to merge."
