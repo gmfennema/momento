@@ -52,20 +52,27 @@ test('generator: upload → stats → card preview → downloads enabled', async
   await page.click('.tier[data-key="auto"]');
   await expect(page.locator('#stats-line')).toContainText('Lyra 3.2 kbps', { timeout: 10_000 });
 
-  // Preview canvas actually has card pixels.
-  const size = await page.locator('#card-preview').evaluate((c: HTMLCanvasElement) => ({
-    w: c.width,
-    h: c.height,
-  }));
-  expect(size.w).toBeGreaterThan(400);
-  expect(Math.abs(size.w / size.h - 88.9 / 50.8)).toBeLessThan(0.05);
+  // Preview canvases (front + back) actually have card pixels.
+  for (const id of ['#card-preview', '#front-preview']) {
+    const size = await page.locator(id).evaluate((c: HTMLCanvasElement) => ({
+      w: c.width,
+      h: c.height,
+    }));
+    expect(size.w).toBeGreaterThan(400);
+    expect(Math.abs(size.w / size.h - 88.9 / 50.8)).toBeLessThan(0.05);
+  }
 
-  // SVG download produces a real card SVG.
-  const [download] = await Promise.all([
+  // SVG downloads produce real card SVGs for both faces.
+  const [backDownload] = await Promise.all([
     page.waitForEvent('download'),
     page.click('#dl-svg'),
   ]);
-  expect(download.suggestedFilename()).toBe('momento-card.svg');
+  expect(backDownload.suggestedFilename()).toBe('momento-card-back.svg');
+  const [frontDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    page.click('#dl-front-svg'),
+  ]);
+  expect(frontDownload.suggestedFilename()).toBe('momento-card-front.svg');
 });
 
 test('generator: invert toggle changes the preview background', async ({ page }) => {

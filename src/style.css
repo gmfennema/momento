@@ -206,6 +206,14 @@ canvas.waveform {
   min-width: 200px;
 }
 
+.card-face-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+
 .card-preview {
   width: 100%;
   border-radius: 8px;

@@ -24,6 +24,13 @@ import {
   type Tier,
 } from '../lib/layout';
 import { chunkMatrix, entryMatrix } from '../lib/qr';
+import {
+  computeWaveformBars,
+  drawFront,
+  FRONT_BAR_COUNT,
+  renderFrontSvg,
+  type FrontInput,
+} from '../lib/front';
 import { drawCard, renderSvg, type RenderInput } from '../lib/render';
 import { startRecording, type RecorderHandle } from './recorder';
 import { attachTrim, type TrimState } from './trim';
@@ -42,6 +49,7 @@ interface State {
   encoded: Uint8Array | null;
   plan: CardPlan | null;
   renderInput: RenderInput | null;
+  frontInput: FrontInput | null;
 }
 
 export function mountGenerator(root: HTMLElement): void {
@@ -79,12 +87,17 @@ export function mountGenerator(root: HTMLElement): void {
         <label>Name line <input type="text" id="text-line" placeholder="optional" maxlength="40" /></label>
       </div>
       <div id="card-wrap" style="display:none; margin-top:0.9rem">
+        <div class="card-face-label">Front</div>
+        <canvas class="card-preview" id="front-preview"></canvas>
+        <div class="card-face-label" style="margin-top:0.9rem">Back</div>
         <canvas class="card-preview" id="card-preview"></canvas>
         <div class="stats-line" id="stats-line"></div>
         <div id="warnings"></div>
         <div class="row" style="margin-top:0.8rem">
-          <button class="primary" id="dl-png">Download PNG (${PNG_DPI} dpi)</button>
-          <button class="primary" id="dl-svg">Download SVG (vector)</button>
+          <button class="primary" id="dl-front-png">Front PNG (${PNG_DPI} dpi)</button>
+          <button class="primary" id="dl-front-svg">Front SVG</button>
+          <button class="primary" id="dl-png">Back PNG (${PNG_DPI} dpi)</button>
+          <button class="primary" id="dl-svg">Back SVG (vector)</button>
           <button id="test-scan">I want to test-scan it</button>
         </div>
         <div class="hint" id="test-hint" style="display:none">
@@ -120,6 +133,7 @@ export function mountGenerator(root: HTMLElement): void {
     encoded: null,
     plan: null,
     renderInput: null,
+    frontInput: null,
   };
 
   let playback: Playback | null = null;
@@ -375,6 +389,17 @@ export function mountGenerator(root: HTMLElement): void {
       state.encoded = encoded;
       state.plan = plan;
       state.renderInput = renderInput;
+      // The front shows the same slice of audio the back encodes — but keeps
+      // the name line even when the back drops it to protect scannability.
+      state.frontInput = {
+        bars: computeWaveformBars(
+          slicePcm(state.pcm, state.trim.startSec, state.trim.endSec),
+          FRONT_BAR_COUNT,
+        ),
+        inverted: state.inverted,
+        textLine: state.textLine.trim() || undefined,
+        durationSec: seconds,
+      };
       renderPreview(tier);
     } catch (e) {
       if (seq === encodeSeq) {
@@ -393,6 +418,13 @@ export function mountGenerator(root: HTMLElement): void {
     canvas.width = Math.round(plan.widthMm * previewPxPerMm * 2);
     canvas.height = Math.round(plan.heightMm * previewPxPerMm * 2);
     drawCard(canvas.getContext('2d')!, renderInput, previewPxPerMm * 2);
+
+    if (state.frontInput) {
+      const front = $<HTMLCanvasElement>('front-preview');
+      front.width = canvas.width;
+      front.height = canvas.height;
+      drawFront(front.getContext('2d')!, state.frontInput, previewPxPerMm * 2);
+    }
 
     const seconds = state.trim.endSec - state.trim.startSec;
     const codecLabel = tier.codec === 'lyra' ? 'Lyra 3.2 kbps' : `Codec 2 ${tier.mode}`;
@@ -438,14 +470,32 @@ export function mountGenerator(root: HTMLElement): void {
     canvas.height = Math.round(plan.heightMm * PX_PER_MM);
     drawCard(canvas.getContext('2d')!, renderInput, PX_PER_MM);
     canvas.toBlob((blob) => {
-      if (blob) downloadBlob(blob, 'momento-card.png');
+      if (blob) downloadBlob(blob, 'momento-card-back.png');
     }, 'image/png');
   });
 
   $('dl-svg').addEventListener('click', () => {
     if (!state.renderInput) return;
     const svg = renderSvg(state.renderInput);
-    downloadBlob(new Blob([svg], { type: 'image/svg+xml' }), 'momento-card.svg');
+    downloadBlob(new Blob([svg], { type: 'image/svg+xml' }), 'momento-card-back.svg');
+  });
+
+  $('dl-front-png').addEventListener('click', () => {
+    const { plan, frontInput } = state;
+    if (!plan || !frontInput) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(plan.widthMm * PX_PER_MM);
+    canvas.height = Math.round(plan.heightMm * PX_PER_MM);
+    drawFront(canvas.getContext('2d')!, frontInput, PX_PER_MM);
+    canvas.toBlob((blob) => {
+      if (blob) downloadBlob(blob, 'momento-card-front.png');
+    }, 'image/png');
+  });
+
+  $('dl-front-svg').addEventListener('click', () => {
+    if (!state.frontInput) return;
+    const svg = renderFrontSvg(state.frontInput);
+    downloadBlob(new Blob([svg], { type: 'image/svg+xml' }), 'momento-card-front.svg');
   });
 
   function setError(msg: string | null): void {
