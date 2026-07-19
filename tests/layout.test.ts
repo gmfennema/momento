@@ -19,12 +19,18 @@ describe('planCard', () => {
     it(`produces a feasible plan for ${tier.key} (${tierBytes[tier.key]}B)`, () => {
       const plan = planCard(tierBytes[tier.key], { inverted: false });
       expect(plan.chunkCount).toBeLessThanOrEqual(255);
-      expect(plan.chunkCount * plan.payloadPerChunk).toBeGreaterThanOrEqual(
-        tierBytes[tier.key],
-      );
-      // Largest chunk (header + payload) must fit the chosen QR version.
-      const chunkBytes = HEADER_BYTES + plan.payloadPerChunk;
-      expect(base45Length(chunkBytes)).toBeLessThanOrEqual(alnumCapacityL(plan.qrVersion));
+      expect(plan.chunkSpecs.length).toBe(plan.chunkCount);
+      const capacity = plan.chunkSpecs.reduce((sum, s) => sum + s.payloadBytes, 0);
+      expect(capacity).toBeGreaterThanOrEqual(tierBytes[tier.key]);
+      // No dead chunk: even without the last one, the payload wouldn't fit.
+      expect(capacity - plan.chunkSpecs[plan.chunkSpecs.length - 1]!.payloadBytes)
+        .toBeLessThan(tierBytes[tier.key]);
+      // Each chunk (header + payload) must fit its QR version.
+      for (const s of plan.chunkSpecs) {
+        expect(base45Length(HEADER_BYTES + s.payloadBytes)).toBeLessThanOrEqual(
+          alnumCapacityL(s.qrVersion),
+        );
+      }
       // Every cell must lie inside the card.
       for (const cell of plan.cells) {
         expect(cell.xMm).toBeGreaterThanOrEqual(0);
@@ -96,19 +102,54 @@ describe('planCard', () => {
     }
   });
 
-  it('non-overlapping cells', () => {
-    const plan = planCard(2000, { inverted: false });
-    for (let i = 0; i < plan.cells.length; i++) {
-      for (let j = i + 1; j < plan.cells.length; j++) {
-        const a = plan.cells[i]!;
-        const b = plan.cells[j]!;
-        const overlap =
-          a.xMm < b.xMm + b.sizeMm &&
-          b.xMm < a.xMm + a.sizeMm &&
-          a.yMm < b.yMm + b.sizeMm &&
-          b.yMm < a.yMm + a.sizeMm;
-        expect(overlap).toBe(false);
+  it('non-overlapping cells inside the card, at every layout shape', () => {
+    for (const bytes of [300, 1000, 2000, 3216, 4000]) {
+      const plan = planCard(bytes, { inverted: false });
+      for (const cell of plan.cells) {
+        expect(cell.xMm).toBeGreaterThanOrEqual(0);
+        expect(cell.yMm).toBeGreaterThanOrEqual(0);
+        expect(cell.xMm + cell.sizeMm).toBeLessThanOrEqual(CARD_W_MM);
+        expect(cell.yMm + cell.sizeMm).toBeLessThanOrEqual(CARD_H_MM);
+      }
+      for (let i = 0; i < plan.cells.length; i++) {
+        for (let j = i + 1; j < plan.cells.length; j++) {
+          const a = plan.cells[i]!;
+          const b = plan.cells[j]!;
+          const overlap =
+            a.xMm < b.xMm + b.sizeMm &&
+            b.xMm < a.xMm + a.sizeMm &&
+            a.yMm < b.yMm + b.sizeMm &&
+            b.yMm < a.yMm + a.sizeMm;
+          expect(overlap).toBe(false);
+        }
       }
     }
+  });
+
+  it('entry strip layout beats the classic grid where the geometry allows', () => {
+    // 10s balanced (≈2KB): moving the entry QR into a side strip lets the
+    // main chunks drop a QR version — bigger modules than the classic 0.302mm.
+    const plan = planCard(2000, { inverted: false });
+    expect(plan.moduleMm).toBeGreaterThan(0.31);
+    // Mixed card: main-grid chunks plus small top-up codes in the strip.
+    const versions = new Set(plan.chunkSpecs.map((s) => s.qrVersion));
+    expect(versions.size).toBeGreaterThan(1);
+    // Chunk specs line up with the cell indices they'll be rendered into.
+    const chunkCells = plan.cells.filter((c) => c.kind === 'chunk');
+    expect(new Set(chunkCells.map((c) => c.index)).size).toBe(plan.chunkCount);
+  });
+
+  it('entry strip keeps the entry QR big enough to phone-scan', () => {
+    for (const bytes of [500, 1000, 2000, 3216, 4000]) {
+      const entry = planCard(bytes, { inverted: false }).cells.find((c) => c.kind === 'entry')!;
+      expect(entry.sizeMm).toBeGreaterThanOrEqual(10);
+    }
+  });
+
+  it('auto tier reaches Lyra for an 8s clip via the entry strip', () => {
+    // 8s · 400B/s ≈ 3.2KB used to force the balanced tier; the strip layout
+    // keeps Lyra at or above the module floor.
+    const tier = pickAutoTier(8, { inverted: false }, true);
+    expect(tier.codec).toBe('lyra');
   });
 });
