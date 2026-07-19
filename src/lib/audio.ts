@@ -37,14 +37,10 @@ export function float32ToPcm(f32: Float32Array): Int16Array {
   return pcm;
 }
 
-export function slicePcm(
-  pcm: Int16Array,
-  startSec: number,
-  endSec: number,
-  sampleRate = PCM_SAMPLE_RATE,
-): Int16Array {
-  const a = Math.max(0, Math.floor(startSec * sampleRate));
-  const b = Math.min(pcm.length, Math.ceil(endSec * sampleRate));
+/** Slice 16 kHz pipeline PCM by time. */
+export function slicePcm(pcm: Int16Array, startSec: number, endSec: number): Int16Array {
+  const a = Math.max(0, Math.floor(startSec * PCM_SAMPLE_RATE));
+  const b = Math.min(pcm.length, Math.ceil(endSec * PCM_SAMPLE_RATE));
   return pcm.slice(a, b);
 }
 

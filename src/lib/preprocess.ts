@@ -17,7 +17,10 @@ export interface PreparedPcm {
 export function preparePcm(f32: Float32Array, sampleRate: number): PreparedPcm {
   highPass(f32, sampleRate);
   const durationSec = f32.length / sampleRate;
-  const bounds = activeBounds(f32, sampleRate);
+  let bounds = activeBounds(f32, sampleRate);
+  // A trim that leaves less than a playable clip means the detector misread
+  // the content (e.g. everything was near-threshold) — keep the whole clip.
+  if (bounds && bounds.endSec - bounds.startSec < 0.3) bounds = null;
   let active = f32;
   let trimmedLeadSec = 0;
   let trimmedTailSec = 0;
@@ -99,10 +102,12 @@ export function activeBounds(
   }
   const sorted = rms.slice().sort();
   const noiseFloor = sorted[Math.floor(frames * 0.1)]!;
-  const peak = sorted[frames - 1]!;
-  if (peak < 1e-4) return null;
-  // Above 4× the noise floor AND above -32 dB relative to the loudest frame.
-  const threshold = Math.max(noiseFloor * 4, peak * 0.025, 1e-4);
+  // 95th-percentile frame RMS, not the absolute max — one mic bump must not
+  // raise the bar above soft speech.
+  const loud = sorted[Math.min(frames - 1, Math.floor(frames * 0.95))]!;
+  if (sorted[frames - 1]! < 1e-4) return null;
+  // Above 4× the noise floor AND above -32 dB relative to the loud frames.
+  const threshold = Math.max(noiseFloor * 4, loud * 0.025, 1e-4);
   let first = -1;
   let last = -1;
   for (let f = 0; f < frames; f++) {

@@ -150,6 +150,12 @@ export class ChunkCollector {
     return this.total !== null && this.payloads.size === this.total;
   }
 
+  /** Wire version of the adopted card, or null before the first chunk. Lets
+   * the player start warming up the right codec while scanning continues. */
+  get wireVersion(): number | null {
+    return this.version;
+  }
+
   assemble(): { version: number; modeId: CodecModeId; data: Uint8Array } {
     if (!this.complete || this.total === null || this.modeId === null || this.version === null) {
       throw new Error('collector incomplete');

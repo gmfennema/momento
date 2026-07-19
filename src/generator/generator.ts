@@ -14,7 +14,15 @@ import { lyraEncode, lyraSupported, warmUpLyra } from '../lib/lyra';
 import { preparePcm } from '../lib/preprocess';
 import { decimate2 } from '../lib/resample';
 import { randomCardId, splitPayload } from '../lib/chunk';
-import { pickAutoTier, planCard, TIERS, type CardPlan, type Tier } from '../lib/layout';
+import {
+  estimatePayloadBytes,
+  pickAutoTier,
+  planCard,
+  TIERS,
+  type CardPlan,
+  type CardSpec,
+  type Tier,
+} from '../lib/layout';
 import { chunkMatrix, entryMatrix } from '../lib/qr';
 import { drawCard, renderSvg, type RenderInput } from '../lib/render';
 import { startRecording, type RecorderHandle } from './recorder';
@@ -118,6 +126,8 @@ export function mountGenerator(root: HTMLElement): void {
   let recorder: RecorderHandle | null = null;
   let encodeSeq = 0;
   let debounceTimer = 0;
+  let pcmEpoch = 0; // bumped when a new clip loads, invalidating the encode cache
+  let encodeCache: { key: string; bytes: Uint8Array } | null = null;
 
   // --- audio input ---
 
@@ -137,6 +147,8 @@ export function mountGenerator(root: HTMLElement): void {
       const trimmed = prepared.trimmedLeadSec + prepared.trimmedTailSec;
       state.pcm = prepared.pcm;
       state.cardId = randomCardId();
+      pcmEpoch++;
+      encodeCache = null;
       warmUpLyra();
       $('audio-status').textContent =
         `${durationSec.toFixed(1)}s loaded` +
@@ -226,7 +238,7 @@ export function mountGenerator(root: HTMLElement): void {
       label: 'Auto',
       blurb: 'Picks the highest quality that keeps this clip easy to scan.',
     },
-    ...TIERS.map((t) => ({ key: t.key as State['tierKey'], label: t.label, blurb: t.blurb })),
+    ...TIERS,
   ];
   const tiersEl = $('tiers');
   for (const tile of tiles) {
@@ -256,8 +268,15 @@ export function mountGenerator(root: HTMLElement): void {
   }
   renderTierSelection();
 
-  function cardSpec(): { inverted: boolean } {
-    return { inverted: state.inverted };
+  // The single card spec used for tier decisions, tier stats, AND the real
+  // plan — if these diverged (e.g. one forgot the text line, whose 5mm strip
+  // shrinks the modules), the auto tier could approve a card the final plan
+  // renders below the scannability floor.
+  function cardSpec(): CardSpec {
+    return {
+      inverted: state.inverted,
+      textLine: state.textLine.trim() ? state.textLine : undefined,
+    };
   }
 
   /** The concrete tier the current selection encodes with. */
@@ -283,9 +302,8 @@ export function mountGenerator(root: HTMLElement): void {
         statsEl.textContent = 'not available in this browser';
         return;
       }
-      const bytes = Math.ceil(seconds * tier.bytesPerSec);
       try {
-        const plan = planCard(bytes, cardSpec());
+        const plan = planCard(estimatePayloadBytes(seconds, tier), cardSpec());
         statsEl.textContent = `${plan.chunkCount} codes · ${plan.moduleMm.toFixed(2)}mm dots`;
       } catch {
         statsEl.textContent = 'does not fit';
@@ -324,16 +342,23 @@ export function mountGenerator(root: HTMLElement): void {
     try {
       const seconds = state.trim.endSec - state.trim.startSec;
       const tier = resolveTier(seconds);
-      const pcm = slicePcm(state.pcm, state.trim.startSec, state.trim.endSec);
-      const encoded =
-        tier.codec === 'lyra'
-          ? await lyraEncode(pcm)
-          : await codec2Encode(tier.mode, decimate2(pcm));
+      // Encoding depends only on the clip, trim window, and tier — reuse the
+      // last result when only card options (text line, invert) changed, so
+      // typing a caption doesn't re-run neural-codec inference per keystroke.
+      const encodeKey = `${tier.key}|${pcmEpoch}|${state.trim.startSec}|${state.trim.endSec}`;
+      let encoded: Uint8Array;
+      if (encodeCache && encodeCache.key === encodeKey) {
+        encoded = encodeCache.bytes;
+      } else {
+        const pcm = slicePcm(state.pcm, state.trim.startSec, state.trim.endSec);
+        encoded =
+          tier.codec === 'lyra'
+            ? await lyraEncode(pcm)
+            : await codec2Encode(tier.mode, decimate2(pcm));
+        encodeCache = { key: encodeKey, bytes: encoded };
+      }
       if (seq !== encodeSeq) return; // superseded
-      const plan = planCard(encoded.length, {
-        inverted: state.inverted,
-        textLine: state.textLine || undefined,
-      });
+      const plan = planCard(encoded.length, cardSpec());
       const chunks = splitPayload(
         encoded,
         tier.wireVersion,

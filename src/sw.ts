@@ -30,19 +30,21 @@ function withCoiHeaders(res: Response): Response {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
-// Handle navigations ourselves (network first, precached shell offline) so the
-// document response always carries the isolation headers. Subresources fall
-// through to the Workbox precache routes registered below.
+// Handle navigations ourselves so the document response always carries the
+// isolation headers. The precached shell is served directly (matching the old
+// generateSW navigateFallback behavior — instant load offline and on flaky
+// networks); shell updates arrive through new service worker versions.
+// Subresources fall through to the Workbox precache routes registered below.
 self.addEventListener('fetch', (event) => {
   if (event.request.mode !== 'navigate') return;
   event.respondWith(
     (async () => {
+      const shellKey = getCacheKeyForURL('index.html');
+      const shell = shellKey && (await caches.match(shellKey));
+      if (shell) return withCoiHeaders(shell);
       try {
         return withCoiHeaders(await fetch(event.request));
       } catch {
-        const shellKey = getCacheKeyForURL('index.html');
-        const shell = shellKey && (await caches.match(shellKey));
-        if (shell) return withCoiHeaders(shell);
         return Response.error();
       }
     })(),

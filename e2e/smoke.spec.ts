@@ -151,4 +151,5 @@ test('player: photo of a Codec 2 card still decodes (wire v0 back-compat)', asyn
   });
   await expect(page.locator('#play')).toBeVisible({ timeout: 30_000 });
   await expect(page.locator('#stage')).toContainText('rebuilt entirely from the card');
+  await expect(page.locator('#stage')).toContainText(/\d(\.\d)?s of audio/);
 });

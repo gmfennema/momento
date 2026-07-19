@@ -39,8 +39,31 @@ const moduleShim = `const __LYRA_BASE__ = import.meta.url;${shimBody}`;
 const workerShim = `const __LYRA_BASE__ = self.location.href;${shimBody}`;
 
 // Entry scripts that create/run inside contexts where model fetches happen.
+// These names are webpack chunk ids from the PINNED lyra-codec version — a
+// version bump reshuffles them, and an unshimmed worker entry would fetch
+// models from unpkg at runtime (dead offline, blocked by COEP). Fail the
+// install loudly instead of silently shipping that.
 const MODULE_ENTRIES = new Set(['lyra_bundle.js']);
 const WORKER_ENTRIES = new Set(['173.lyra_bundle.js', '610.lyra_bundle.js']);
+
+const present = new Set(readdirSync(SRC));
+for (const required of [...MODULE_ENTRIES, ...WORKER_ENTRIES]) {
+  if (!present.has(required)) {
+    throw new Error(
+      `lyra-codec dist no longer contains ${required} — the package layout changed; ` +
+        're-derive the shim entry list in scripts/copy-lyra.mjs before shipping.',
+    );
+  }
+}
+const unexpected = [...present].filter(
+  (n) => /^\d+\.lyra_bundle\.js$/.test(n) && !WORKER_ENTRIES.has(n) && !['409.lyra_bundle.js', '906.lyra_bundle.js'].includes(n),
+);
+if (unexpected.length) {
+  throw new Error(
+    `lyra-codec dist has new numbered chunks (${unexpected.join(', ')}) — ` +
+      'check which are worker entries and update scripts/copy-lyra.mjs.',
+  );
+}
 
 mkdirSync(DST, { recursive: true });
 let shimmed = 0;

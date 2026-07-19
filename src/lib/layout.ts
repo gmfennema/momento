@@ -13,6 +13,7 @@ import {
   type Codec2Mode,
   type CodecModeId,
 } from './chunk';
+import { LYRA_BYTES_PER_SEC } from './lyra';
 
 /** Standard US business card. */
 export const CARD_W_MM = 88.9;
@@ -68,11 +69,20 @@ export const TIERS: readonly Tier[] = [
     codec: 'lyra',
     wireVersion: WIRE_LYRA,
     modeId: LYRA_MODE_3200,
-    bytesPerSec: 400,
+    bytesPerSec: LYRA_BYTES_PER_SEC,
     label: 'Best',
     blurb: 'Natural, clear voice (Lyra neural codec). Denser card; playback needs a modern phone.',
   },
 ] as const;
+
+/** Conservative payload estimate for planning before the real encode exists.
+ * Codec 2 output wobbles a few bytes around the nominal rate and the Lyra
+ * path pads to whole 20 ms frames (< 16 bytes either way), so plan with slack
+ * rather than let the real encode land one chunk denser than the tier
+ * decision assumed. */
+export function estimatePayloadBytes(seconds: number, tier: Tier): number {
+  return Math.ceil(seconds * tier.bytesPerSec) + 16;
+}
 
 /** The auto tier refuses to go denser than this. 0.25 mm is where engravers
  * and phone cameras start genuinely failing (the hard warning); the softer
@@ -94,7 +104,7 @@ export function pickAutoTier(
     if (tier.codec === 'lyra' && !allowLyra) continue;
     let plan: CardPlan;
     try {
-      plan = planCard(Math.ceil(seconds * tier.bytesPerSec), spec);
+      plan = planCard(estimatePayloadBytes(seconds, tier), spec);
     } catch {
       continue; // doesn't fit on the card at all
     }

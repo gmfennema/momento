@@ -5,7 +5,7 @@
 import { playPcm, type Playback } from '../lib/audio';
 import { codec2Decode, CODEC2_SAMPLE_RATE } from '../lib/codec2';
 import { lyraDecode, lyraSupported, warmUpLyra, LYRA_SAMPLE_RATE } from '../lib/lyra';
-import { ChunkCollector, MODE_BY_ID, WIRE_LYRA } from '../lib/chunk';
+import { ChunkCollector, LYRA_MODE_3200, MODE_BY_ID, WIRE_LYRA } from '../lib/chunk';
 import { scanPhoto, startScanner, type ScannerHandle } from './scanner';
 
 export function mountPlayer(root: HTMLElement): void {
@@ -21,9 +21,6 @@ export function mountPlayer(root: HTMLElement): void {
   let playback: Playback | null = null;
   let pcm: Int16Array | null = null;
   let pcmRate = CODEC2_SAMPLE_RATE;
-  // Newer cards use the Lyra codec — start fetching its wasm + models while
-  // the user is still scanning.
-  warmUpLyra();
 
   function makePhotoInput(onFiles: (files: File[]) => void): HTMLInputElement {
     const input = document.createElement('input');
@@ -40,6 +37,9 @@ export function mountPlayer(root: HTMLElement): void {
   }
 
   function updateProgress(count: HTMLElement, strip: HTMLElement, collector: ChunkCollector): void {
+    // The first chunk names the codec — fetch the Lyra wasm + models (~7 MB)
+    // only for cards that actually use it, overlapping the remaining scan.
+    if (collector.wireVersion === WIRE_LYRA) warmUpLyra();
     const { got, total, missing } = collector.progress;
     count.textContent = total ? `${got} of ${total}` : 'Looking…';
     if (total && strip.childElementCount !== total) {
@@ -213,9 +213,18 @@ export function mountPlayer(root: HTMLElement): void {
     try {
       const { version, modeId, data } = collector.assemble();
       if (version === WIRE_LYRA) {
-        if (!lyraSupported()) {
-          stage.innerHTML = `<div class="error">This card's audio needs a newer browser to play — try updating, or another phone.</div>`;
+        if (modeId !== LYRA_MODE_3200) {
+          // A reserved Lyra mode from a future generator — decoding it as
+          // 3.2 kbps would play garbage, so be honest instead.
+          stage.innerHTML = `<div class="error">This card was made with a newer version of Momento — refresh this page and try again.</div>`;
           setTimeout(showIdle, 4000);
+          return;
+        }
+        if (!lyraSupported()) {
+          // Most likely the first-ever visit before the isolation service
+          // worker kicked in — a reload fixes that; a truly old browser won't.
+          stage.innerHTML = `<div class="error">This card's audio needs one more page reload to unlock — reload and scan again. If it keeps happening, update your browser.</div>`;
+          setTimeout(showIdle, 5000);
           return;
         }
         pcm = await lyraDecode(data);
