@@ -90,13 +90,36 @@ export function splitPayload(
 ): Uint8Array[] {
   if (maxPayloadPerChunk < 1) throw new Error('maxPayloadPerChunk must be ≥1');
   const totalChunks = Math.max(1, Math.ceil(data.length / maxPayloadPerChunk));
-  if (totalChunks > 255) throw new Error('payload needs more than 255 chunks');
+  return splitPayloadSizes(data, version, modeId, new Array(totalChunks).fill(maxPayloadPerChunk), cardId);
+}
+
+/** Split into chunks of per-index capacities (a card layout's chunkSpecs).
+ * Every chunk carries data; only the last may run short — the plan and the
+ * payload length must agree, which planCard guarantees when planned with the
+ * real encoded size. Decoding needs no size table: chunks concatenate by
+ * index, each payload knowing its own length. */
+export function splitPayloadSizes(
+  data: Uint8Array,
+  version: number,
+  modeId: CodecModeId,
+  payloadSizes: number[],
+  cardId: number = randomCardId(),
+): Uint8Array[] {
+  const totalChunks = payloadSizes.length;
+  if (totalChunks < 1 || totalChunks > 255) throw new Error('chunk count out of range');
   const chunks: Uint8Array[] = [];
+  let offset = 0;
   for (let i = 0; i < totalChunks; i++) {
-    const payload = data.subarray(i * maxPayloadPerChunk, (i + 1) * maxPayloadPerChunk);
+    const capacity = payloadSizes[i]!;
+    if (capacity < 1) throw new Error('chunk capacity must be ≥1');
+    const last = i === totalChunks - 1;
+    const take = Math.min(capacity, data.length - offset);
+    if (!last && take < capacity) throw new Error('payload does not fill the chunk plan');
+    if (last && data.length - offset > capacity) throw new Error('payload exceeds the chunk plan');
     chunks.push(
-      encodeChunk({ version, modeId, cardId, chunkIndex: i, totalChunks }, payload),
+      encodeChunk({ version, modeId, cardId, chunkIndex: i, totalChunks }, data.subarray(offset, offset + take)),
     );
+    offset += take;
   }
   return chunks;
 }
