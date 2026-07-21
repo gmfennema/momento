@@ -83,7 +83,7 @@ export function mountGenerator(root: HTMLElement): void {
     <div class="panel">
       <h2>3 · Card</h2>
       <div class="options">
-        <label><input type="checkbox" id="invert-toggle" /> Invert for black cards (white engraving)</label>
+        <label><input type="checkbox" id="invert-toggle" /> Invert QR codes for black cards (background stays white)</label>
         <label>Name line <input type="text" id="text-line" placeholder="optional" maxlength="40" /></label>
       </div>
       <div id="card-wrap" style="display:none; margin-top:0.9rem">
@@ -396,7 +396,6 @@ export function mountGenerator(root: HTMLElement): void {
           slicePcm(state.pcm, state.trim.startSec, state.trim.endSec),
           FRONT_BAR_COUNT,
         ),
-        inverted: state.inverted,
         textLine: state.textLine.trim() || undefined,
       };
       renderPreview(tier);

@@ -54,7 +54,6 @@ describe('computeWaveformBars', () => {
 describe('layoutFront', () => {
   const input = (over = {}) => ({
     bars: computeWaveformBars(tonePcm(5), FRONT_BAR_COUNT),
-    inverted: false,
     textLine: 'Nana & Pop, 1987',
     ...over,
   });
@@ -93,18 +92,17 @@ describe('layoutFront', () => {
     expect(0.52 * 40 * long).toBeLessThanOrEqual(CARD_W_MM);
   });
 
-  it('is strictly monochrome, flipped by invert', () => {
-    const light = layoutFront(input());
-    const dark = layoutFront(input({ inverted: true }));
-    expect(light.colors).toEqual({ bg: '#ffffff', ink: '#000000' });
-    expect(dark.colors).toEqual({ bg: '#000000', ink: '#ffffff' });
+  it('is strictly monochrome — black ink on white stock', () => {
+    // The front never inverts: laser software engraves the dark marks, so
+    // the same artwork serves light and dark cards alike.
+    const L = layoutFront(input());
+    expect(L.colors).toEqual({ bg: '#ffffff', ink: '#000000' });
   });
 });
 
 describe('renderFrontSvg', () => {
   const input = {
     bars: computeWaveformBars(tonePcm(5), FRONT_BAR_COUNT),
-    inverted: false,
     textLine: 'Smith & Sons <est. 1987>',
   };
 
@@ -119,11 +117,9 @@ describe('renderFrontSvg', () => {
   });
 
   it('uses no color outside the two-tone ink/stock pair', () => {
-    for (const inverted of [false, true]) {
-      const svg = renderFrontSvg({ ...input, inverted });
-      const colors = new Set(svg.match(/#[0-9a-f]{6}/gi)?.map((s) => s.toLowerCase()));
-      expect(colors).toEqual(new Set(['#ffffff', '#000000']));
-    }
+    const svg = renderFrontSvg(input);
+    const colors = new Set(svg.match(/#[0-9a-f]{6}/gi)?.map((s) => s.toLowerCase()));
+    expect(colors).toEqual(new Set(['#ffffff', '#000000']));
   });
 
   it('escapes XML in the name line', () => {

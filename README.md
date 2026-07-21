@@ -66,8 +66,10 @@ still get the Codec 2 tiers — the Best tier is simply disabled.
 
 - Engrave the output at **exactly 3.5″ × 2″ (88.9 × 50.8 mm)** — do not rescale.
 - Prefer the **SVG** for laser software; the PNG is 1200 dpi if you need raster.
-- For **black cards**, enable the invert toggle (white marks on dark). The
-  scanner reads inverted codes natively.
+- For **black cards**, enable the invert toggle. The background stays white —
+  only the QR codes flip: each becomes a dark plate (code + quiet zone) with
+  the modules knocked out, so the laser engraves just the code tiles and the
+  unburned modules stay dark. The scanner reads inverted codes natively.
 - High contrast and crisp edges matter more than depth. Test-scan a printout
   before burning a card.
 

@@ -19,7 +19,6 @@ export const MIN_BAR = 0.045;
 export interface FrontInput {
   /** normalized bar amplitudes, each in [MIN_BAR, 1] (see computeWaveformBars) */
   bars: number[];
-  inverted: boolean;
   /** owner's name / caption, shown under the waveform */
   textLine?: string;
   widthMm?: number;
@@ -57,12 +56,12 @@ export interface FrontColors {
   ink: string;
 }
 
-/** One ink, one stock: black on white, or white on black for dark cards. */
-function palette(inverted: boolean): FrontColors {
-  return inverted
-    ? { bg: '#000000', ink: '#ffffff' }
-    : { bg: '#ffffff', ink: '#000000' };
-}
+/** One ink, one stock — always black marks on a white background. Laser
+ * software engraves the dark areas, so this same artwork serves light and
+ * dark stock alike: on a black card the engraved marks simply come out
+ * light. (Unlike the QR back, the front has no scan polarity to preserve,
+ * so it never inverts.) */
+const PALETTE: FrontColors = { bg: '#ffffff', ink: '#000000' };
 
 /** Secondary text (wordmark, hint) prints as a tone of the same ink. */
 const SECONDARY_OPACITY = 0.55;
@@ -125,7 +124,7 @@ export function layoutFront(input: FrontInput): FrontLayout {
   return {
     widthMm: W,
     heightMm: H,
-    colors: palette(input.inverted),
+    colors: PALETTE,
     bars,
     baseline: { x1Mm: margin, x2Mm: W - margin, yMm: waveCenterY, strokeMm: 0.1 },
     wordmark: {
