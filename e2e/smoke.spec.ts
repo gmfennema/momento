@@ -75,7 +75,7 @@ test('generator: upload → stats → card preview → downloads enabled', async
   expect(frontDownload.suggestedFilename()).toBe('momento-card-front.svg');
 });
 
-test('generator: invert toggle changes the preview background', async ({ page }) => {
+test('generator: invert toggle inverts the codes but keeps the background white', async ({ page }) => {
   await page.goto('/momento/');
   await page.setInputFiles('#file-input', {
     name: 'fixture.wav',
@@ -84,15 +84,28 @@ test('generator: invert toggle changes the preview background', async ({ page })
   });
   await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 20_000 });
 
-  const cornerPixel = () =>
+  const sample = () =>
     page.locator('#card-preview').evaluate((c: HTMLCanvasElement) => {
-      const d = c.getContext('2d')!.getImageData(1, 1, 1, 1).data;
-      return d[0];
+      const { width, height } = c;
+      const d = c.getContext('2d')!.getImageData(0, 0, width, height).data;
+      let dark = 0;
+      let total = 0;
+      for (let i = 0; i < d.length; i += 16) {
+        total++;
+        if (d[i]! < 128) dark++;
+      }
+      return { corner: d[0]!, darkFraction: dark / total };
     });
-  expect(await cornerPixel()).toBeGreaterThan(200); // white card
+  const plain = await sample();
+  expect(plain.corner).toBeGreaterThan(200); // white background
   await page.check('#invert-toggle');
   await page.waitForTimeout(700); // debounce + re-render
-  expect(await cornerPixel()).toBeLessThan(50); // black card
+  const inverted = await sample();
+  // Background stays white (only the marks get engraved)...
+  expect(inverted.corner).toBeGreaterThan(200);
+  // ...while each QR flips to a dark plate with white modules, so the card
+  // gets substantially darker overall.
+  expect(inverted.darkFraction).toBeGreaterThan(plain.darkFraction * 1.5);
 });
 
 test('player: scan screen shows guidance when camera is unavailable', async ({ page }) => {
