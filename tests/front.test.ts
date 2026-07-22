@@ -98,12 +98,37 @@ describe('layoutFront', () => {
     const L = layoutFront(input());
     expect(L.colors).toEqual({ bg: '#ffffff', ink: '#000000' });
   });
+
+  it('builds the metadata line: uppercase voice, MM.DD.YY date, MM:SS duration', () => {
+    const L = layoutFront(input({ voice: 'Emma', recordedAt: '2021-06-18', durationSec: 8 }));
+    expect(L.hint.text).toBe('VOICE: EMMA · RECORDED: 06.18.21 · DURATION: 00:08');
+  });
+
+  it('omits absent metadata fields', () => {
+    expect(layoutFront(input({ durationSec: 75 })).hint.text).toBe('DURATION: 01:15');
+    expect(layoutFront(input({ voice: 'Pop', durationSec: 8 })).hint.text).toBe(
+      'VOICE: POP · DURATION: 00:08',
+    );
+  });
+
+  it('drops a malformed recorded date instead of printing garbage', () => {
+    expect(layoutFront(input({ recordedAt: 'nonsense', durationSec: 8 })).hint.text).toBe(
+      'DURATION: 00:08',
+    );
+  });
+
+  it('falls back to the flip nudge when no metadata is known', () => {
+    expect(layoutFront(input()).hint.text).toBe('SCAN THE BACK TO LISTEN');
+  });
 });
 
 describe('renderFrontSvg', () => {
   const input = {
     bars: computeWaveformBars(tonePcm(5), FRONT_BAR_COUNT),
     textLine: 'Smith & Sons <est. 1987>',
+    voice: 'Emma',
+    recordedAt: '2021-06-18',
+    durationSec: 8,
   };
 
   it('emits a card-sized SVG with one rounded rect per bar', () => {
@@ -113,7 +138,7 @@ describe('renderFrontSvg', () => {
     expect((svg.match(/<rect [^>]*rx=/g) ?? []).length).toBe(FRONT_BAR_COUNT);
     expect(svg).toContain('MOMENTO');
     expect(svg).toContain('letter-spacing');
-    expect(svg).toContain('SCAN THE BACK TO LISTEN');
+    expect(svg).toContain('VOICE: EMMA · RECORDED: 06.18.21 · DURATION: 00:08');
   });
 
   it('uses no color outside the two-tone ink/stock pair', () => {

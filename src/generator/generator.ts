@@ -44,6 +44,8 @@ interface State {
   tierKey: 'auto' | Tier['key'];
   inverted: boolean;
   textLine: string;
+  voice: string;
+  recordedAt: string; // 'YYYY-MM-DD' (front metadata line), '' if cleared
   cardId: number;
   // derived
   encoded: Uint8Array | null;
@@ -85,6 +87,8 @@ export function mountGenerator(root: HTMLElement): void {
       <div class="options">
         <label><input type="checkbox" id="invert-toggle" /> Invert QR codes for black cards (background stays white)</label>
         <label>Name line <input type="text" id="text-line" placeholder="optional" maxlength="40" /></label>
+        <label>Voice <input type="text" id="voice-line" placeholder="e.g. Emma" maxlength="24" /></label>
+        <label>Recorded <input type="date" id="recorded-date" /></label>
       </div>
       <div id="card-wrap" style="display:none; margin-top:0.9rem">
         <div class="card-face-label">Front</div>
@@ -129,6 +133,8 @@ export function mountGenerator(root: HTMLElement): void {
     tierKey: 'auto',
     inverted: false,
     textLine: '',
+    voice: '',
+    recordedAt: todayIso(),
     cardId: randomCardId(),
     encoded: null,
     plan: null,
@@ -336,6 +342,16 @@ export function mountGenerator(root: HTMLElement): void {
     state.textLine = (e.target as HTMLInputElement).value;
     scheduleUpdate();
   });
+  $<HTMLInputElement>('voice-line').addEventListener('input', (e) => {
+    state.voice = (e.target as HTMLInputElement).value;
+    scheduleUpdate();
+  });
+  const recordedInput = $<HTMLInputElement>('recorded-date');
+  recordedInput.value = state.recordedAt; // default to today
+  recordedInput.addEventListener('input', (e) => {
+    state.recordedAt = (e.target as HTMLInputElement).value;
+    scheduleUpdate();
+  });
   $('test-scan').addEventListener('click', () => {
     const h = $('test-hint');
     h.style.display = h.style.display === 'none' ? 'block' : 'none';
@@ -397,6 +413,9 @@ export function mountGenerator(root: HTMLElement): void {
           FRONT_BAR_COUNT,
         ),
         textLine: state.textLine.trim() || undefined,
+        voice: state.voice.trim() || undefined,
+        recordedAt: state.recordedAt || undefined,
+        durationSec: seconds,
       };
       renderPreview(tier);
     } catch (e) {
@@ -506,6 +525,14 @@ export function mountGenerator(root: HTMLElement): void {
       box.appendChild(div);
     }
   }
+}
+
+/** Today's date as 'YYYY-MM-DD' in local time — the default for the Recorded
+ * field, matching the value shape of an <input type="date">. */
+function todayIso(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 function playerUrl(): string {
