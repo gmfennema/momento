@@ -4,7 +4,6 @@ import {
   decodeChunk,
   encodeChunk,
   splitPayload,
-  splitPayloadSizes,
   WIRE_CODEC2,
   WIRE_LYRA,
   type CodecModeId,
@@ -88,28 +87,6 @@ describe('split + collect', () => {
     const collector = new ChunkCollector();
     expect(collector.add(v0[0]!)).toBe('new');
     expect(collector.add(v1[1]!)).toBe('wrong-card');
-  });
-
-  it('reassembles shuffled uneven chunks (entry-strip cards)', () => {
-    // Like a strip card: big main chunks followed by small top-up codes.
-    const data = new Uint8Array(2016);
-    crypto.getRandomValues(data);
-    const sizes = [288, 288, 288, 288, 288, 288, 180, 180]; // last lands short
-    const chunks = splitPayloadSizes(data, WIRE_CODEC2, 2, sizes, 0x7777);
-    expect(chunks.length).toBe(sizes.length);
-    const shuffled = [...chunks].sort(() => Math.random() - 0.5);
-    const collector = new ChunkCollector();
-    for (const c of shuffled) expect(collector.add(c)).toBe('new');
-    expect(collector.complete).toBe(true);
-    expect(collector.assemble().data).toEqual(data);
-  });
-
-  it('rejects a chunk plan that disagrees with the payload size', () => {
-    const data = new Uint8Array(100);
-    // middle chunk would be left partially empty
-    expect(() => splitPayloadSizes(data, WIRE_CODEC2, 0, [60, 60, 60], 1)).toThrow();
-    // payload overflows the plan
-    expect(() => splitPayloadSizes(data, WIRE_CODEC2, 0, [60, 30], 1)).toThrow();
   });
 
   it('single-chunk card works', () => {

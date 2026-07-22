@@ -13,7 +13,7 @@ prepareZXingModule({
 });
 import { describe, expect, it } from 'vitest';
 import { base45Decode } from '../src/lib/base45';
-import { ChunkCollector, splitPayloadSizes } from '../src/lib/chunk';
+import { ChunkCollector, splitPayload } from '../src/lib/chunk';
 import { codec2Decode, codec2Encode } from '../src/lib/codec2';
 import { planCard, TIERS } from '../src/lib/layout';
 import { chunkMatrix, entryMatrix } from '../src/lib/qr';
@@ -62,18 +62,12 @@ describe('end-to-end card pipeline', () => {
         }
 
         const plan = planCard(bits.length, { inverted, textLine: 'Momento Test' });
-        const chunks = splitPayloadSizes(
-          bits,
-          tier.wireVersion,
-          tier.modeId,
-          plan.chunkSpecs.map((s) => s.payloadBytes),
-          0xc0de,
-        );
+        const chunks = splitPayload(bits, tier.wireVersion, tier.modeId, plan.payloadPerChunk, 0xc0de);
         expect(chunks.length).toBe(plan.chunkCount);
 
         const input: RenderInput = {
           plan,
-          matrices: chunks.map((c, i) => chunkMatrix(c, plan.chunkSpecs[i]!.qrVersion)),
+          matrices: chunks.map((c) => chunkMatrix(c, plan.qrVersion)),
           entry: entryMatrix(PLAYER_URL),
           inverted,
         };

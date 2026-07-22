@@ -13,7 +13,7 @@ import { codec2Encode } from '../lib/codec2';
 import { lyraEncode, lyraSupported, warmUpLyra } from '../lib/lyra';
 import { preparePcm } from '../lib/preprocess';
 import { decimate2 } from '../lib/resample';
-import { randomCardId, splitPayloadSizes } from '../lib/chunk';
+import { randomCardId, splitPayload } from '../lib/chunk';
 import {
   estimatePayloadBytes,
   pickAutoTier,
@@ -389,16 +389,16 @@ export function mountGenerator(root: HTMLElement): void {
       }
       if (seq !== encodeSeq) return; // superseded
       const plan = planCard(encoded.length, cardSpec());
-      const chunks = splitPayloadSizes(
+      const chunks = splitPayload(
         encoded,
         tier.wireVersion,
         tier.modeId,
-        plan.chunkSpecs.map((s) => s.payloadBytes),
+        plan.payloadPerChunk,
         state.cardId,
       );
       const renderInput: RenderInput = {
         plan,
-        matrices: chunks.map((c, i) => chunkMatrix(c, plan.chunkSpecs[i]!.qrVersion)),
+        matrices: chunks.map((c) => chunkMatrix(c, plan.qrVersion)),
         entry: entryMatrix(playerUrl()),
         inverted: state.inverted,
       };
@@ -445,13 +445,9 @@ export function mountGenerator(root: HTMLElement): void {
 
     const seconds = state.trim.endSec - state.trim.startSec;
     const codecLabel = tier.codec === 'lyra' ? 'Lyra 3.2 kbps' : `Codec 2 ${tier.mode}`;
-    const smallCodes = plan.chunkSpecs.filter((s) => s.qrVersion !== plan.qrVersion);
-    const codesLabel =
-      `${plan.chunkCount - smallCodes.length} data codes (QR v${plan.qrVersion})` +
-      (smallCodes.length ? ` + ${smallCodes.length} small (v${smallCodes[0]!.qrVersion})` : '');
     $('stats-line').textContent =
       `${seconds.toFixed(1)}s audio · ${codecLabel} · ${state.encoded!.length} bytes · ` +
-      `${codesLabel} + 1 entry code · ` +
+      `${plan.chunkCount} data codes (QR v${plan.qrVersion}) + 1 entry code · ` +
       `${plan.moduleMm.toFixed(2)}mm modules · ${plan.grid.cols}×${plan.grid.rows} grid`;
 
     const w = $('warnings');

@@ -17,11 +17,8 @@ uploads — encoding and decoding happen entirely in the browser.
    the [Codec 2](https://github.com/drowe67/codec2) vocoder (8 kHz) → split
    into self-describing chunks → each chunk becomes a Base45/alphanumeric QR
    code → laid out on a card image with one **entry QR** that carries the
-   player URL. The planner compares two arrangements — the classic uniform
-   grid, and an **entry strip** (entry QR in a narrow side column with small
-   top-up data codes stacked under it) — and picks whichever gives the audio
-   codes bigger modules. Download as high-DPI PNG or vector SVG, with an
-   invert option for black cards. The generator also renders a matching
+   player URL. Download as high-DPI PNG or vector SVG, with an invert option
+   for black cards. The generator also renders a matching
    **card front** — a monochrome, letterpress-style face with the MOMENTO
    wordmark, the clip's waveform as fine mirrored bars, the name line, and a
    clip-metadata line (voice · recorded date · duration) — downloadable as its
@@ -48,8 +45,7 @@ uploads — encoding and decoding happen entirely in the browser.
 The generator reports the physical module (dot) size live and warns below
 0.30 mm (scanning gets touchy) and 0.25 mm (many engravers can't hold it).
 The Auto tier never goes below 0.25 mm; shorter clips therefore get better
-codecs — clips up to ~8.3s fit Lyra (the entry-strip layout is what buys
-the last ~0.7s over a plain grid).
+codecs — a ~6s memo fits Lyra comfortably.
 
 Chunk headers carry a wire-format version, so cards engraved before the Lyra
 tier existed (version 0 = Codec 2) keep playing forever.
