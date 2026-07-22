@@ -21,6 +21,12 @@ export interface FrontInput {
   bars: number[];
   /** owner's name / caption, shown under the waveform */
   textLine?: string;
+  /** speaker/voice credit for the metadata line (e.g. "Emma") */
+  voice?: string;
+  /** date the clip was recorded, as 'YYYY-MM-DD'; rendered MM.DD.YY */
+  recordedAt?: string;
+  /** clip length in seconds; rendered as MM:SS */
+  durationSec?: number;
   widthMm?: number;
   heightMm?: number;
 }
@@ -92,6 +98,38 @@ function centeredX(widthMm: number, letterSpacingMm: number): number {
   return widthMm / 2 + letterSpacingMm / 2;
 }
 
+/** MM:SS, clamped so a sub-second clip still shows 00:00 rather than a sign. */
+function formatDuration(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+/** 'YYYY-MM-DD' → 'MM.DD.YY'; returns '' for anything that doesn't match so a
+ * malformed date drops out of the metadata line instead of printing garbage. */
+function formatRecorded(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso.trim());
+  return m ? `${m[2]}.${m[3]}.${m[1]!.slice(2)}` : '';
+}
+
+/** The bottom line: dot-separated, all-caps clip metadata (VOICE / RECORDED /
+ * DURATION). Fields with no value are omitted; if nothing's known it falls
+ * back to the flip-me nudge so the line is never blank. Single spaces around
+ * the middot — SVG collapses runs of whitespace, so wider gaps wouldn't
+ * survive export and would drift from the canvas preview. */
+function metadataLine(input: FrontInput): string {
+  const parts: string[] = [];
+  const voice = input.voice?.trim();
+  if (voice) parts.push(`VOICE: ${voice.toUpperCase()}`);
+  const recorded = input.recordedAt ? formatRecorded(input.recordedAt) : '';
+  if (recorded) parts.push(`RECORDED: ${recorded}`);
+  if (input.durationSec !== undefined && input.durationSec > 0) {
+    parts.push(`DURATION: ${formatDuration(input.durationSec)}`);
+  }
+  return parts.length ? parts.join(' · ') : 'SCAN THE BACK TO LISTEN';
+}
+
 export function layoutFront(input: FrontInput): FrontLayout {
   const W = input.widthMm ?? CARD_W_MM;
   const H = input.heightMm ?? CARD_H_MM;
@@ -120,6 +158,9 @@ export function layoutFront(input: FrontInput): FrontLayout {
     : 0;
 
   const hintFont = H * 0.0325;
+  // The metadata line is far denser than the old three-word nudge, so it
+  // tracks tighter to stay within the margins even with a long voice credit.
+  const hintLs = hintFont * 0.12;
 
   return {
     widthMm: W,
@@ -136,11 +177,11 @@ export function layoutFront(input: FrontInput): FrontLayout {
     },
     name: name ? { xMm: W / 2, yMm: H * 0.783, fontMm: nameFont, text: name } : undefined,
     hint: {
-      xMm: centeredX(W, hintFont * 0.33),
+      xMm: centeredX(W, hintLs),
       yMm: H * 0.898,
       fontMm: hintFont,
-      letterSpacingMm: hintFont * 0.33,
-      text: 'SCAN THE BACK TO LISTEN',
+      letterSpacingMm: hintLs,
+      text: metadataLine(input),
     },
   };
 }

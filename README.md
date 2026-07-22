@@ -24,7 +24,8 @@ uploads — encoding and decoding happen entirely in the browser.
    invert option for black cards. The generator also renders a matching
    **card front** — a monochrome, letterpress-style face with the MOMENTO
    wordmark, the clip's waveform as fine mirrored bars, the name line, and a
-   "scan the back to listen" nudge — downloadable as its own PNG/SVG pair.
+   clip-metadata line (voice · recorded date · duration) — downloadable as its
+   own PNG/SVG pair.
    One ink on one stock, so the front prints, foils, or engraves with the
    same setup as the back.
 2. **Player** (`/#p`): tap scan → the camera reads codes in any order (multiple
