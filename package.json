@@ -15,6 +15,7 @@
     "e2e": "playwright test"
   },
   "dependencies": {
+    "@fontsource/cormorant-garamond": "^5.3.0",
     "lyra-codec": "1.1.1",
     "qrcode": "^1.5.4",
     "zxing-wasm": "^3.1.2"

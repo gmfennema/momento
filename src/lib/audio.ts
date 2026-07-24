@@ -123,11 +123,11 @@ export function drawWaveform(
   const durationSec = pcm.length / sampleRate;
   if (selection) {
     const [a, b] = selection;
-    ctx.fillStyle = 'rgba(94, 234, 165, 0.12)';
+    ctx.fillStyle = 'rgba(232, 227, 216, 0.09)';
     ctx.fillRect((a / durationSec) * cssW, 0, ((b - a) / durationSec) * cssW, cssH);
   }
 
-  ctx.strokeStyle = '#5eeaa5';
+  ctx.strokeStyle = '#d6cfc0';
   ctx.lineWidth = 1;
   ctx.beginPath();
   const samplesPerPx = Math.max(1, Math.floor(pcm.length / cssW));
@@ -148,7 +148,7 @@ export function drawWaveform(
 
   if (selection) {
     const [a, b] = selection;
-    ctx.fillStyle = '#5eeaa5';
+    ctx.fillStyle = '#e8e3d8';
     for (const s of [a, b]) {
       ctx.fillRect((s / durationSec) * cssW - 1, 0, 2, cssH);
     }

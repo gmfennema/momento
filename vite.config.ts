@@ -26,7 +26,7 @@ export default defineConfig({
       srcDir: 'src',
       filename: 'sw.ts',
       injectManifest: {
-        globPatterns: ['**/*.{js,css,html,wasm,tflite,webmanifest,png,svg,ico}'],
+        globPatterns: ['**/*.{js,css,html,wasm,tflite,webmanifest,png,svg,ico,woff2}'],
         // the Lyra wasm is ~3.8 MB
         maximumFileSizeToCacheInBytes: 5_000_000,
       },
@@ -38,8 +38,8 @@ export default defineConfig({
         start_url: './',
         scope: './',
         display: 'standalone',
-        background_color: '#111111',
-        theme_color: '#111111',
+        background_color: '#0b0b0c',
+        theme_color: '#0b0b0c',
         icons: [
           { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },

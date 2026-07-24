@@ -7,13 +7,15 @@ import { codec2Decode, CODEC2_SAMPLE_RATE } from '../lib/codec2';
 import { enhanceNarrowband } from '../lib/enhance';
 import { lyraDecode, lyraSupported, warmUpLyra, LYRA_SAMPLE_RATE } from '../lib/lyra';
 import { ChunkCollector, LYRA_MODE_3200, MODE_BY_ID, WIRE_LYRA } from '../lib/chunk';
+import { brandHeader } from '../lib/brand';
 import { scanPhoto, startScanner, type ScannerHandle } from './scanner';
 
 export function mountPlayer(root: HTMLElement): void {
   root.innerHTML = `
     <div class="player">
-      <h1><span class="logo">●</span> Momento</h1>
-      <p class="tagline">This card holds a sound. Scan every code on it to listen — the audio exists nowhere else.</p>
+      ${brandHeader(
+        'This card holds a sound. Scan every code on it to listen — the audio exists nowhere else.',
+      )}
       <div id="stage"></div>
     </div>
   `;
@@ -60,8 +62,8 @@ export function mountPlayer(root: HTMLElement): void {
   function showIdle(): void {
     stage.innerHTML = `
       <div class="entry-choices">
-        <button class="primary" id="start" style="font-size:1.1rem; padding:0.9rem 2rem">📷 Scan the card</button>
-        <button id="upload" style="font-size:1.1rem; padding:0.9rem 2rem">🖼️ Upload a photo</button>
+        <button class="primary" id="start">Scan the card</button>
+        <button id="upload">Upload a photo</button>
       </div>
       <p class="hint">Point your camera at the card and pan slowly across all the squares —
         or upload a clear photo that shows every square.</p>
@@ -197,7 +199,7 @@ export function mountPlayer(root: HTMLElement): void {
       </div>
       <div class="row" style="justify-content:center; margin-top:1rem">
         <button class="primary" id="retry">Try again</button>
-        <button id="upload">🖼️ Upload a photo instead</button>
+        <button id="upload">Upload a photo instead</button>
       </div>
     `;
     stage.querySelector('#retry')!.addEventListener('click', () => void showScanning());
