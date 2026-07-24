@@ -32,6 +32,7 @@ import {
   type FrontInput,
 } from '../lib/front';
 import { drawCard, renderSvg, type RenderInput } from '../lib/render';
+import { brandHeader } from '../lib/brand';
 import { startRecording, type RecorderHandle } from './recorder';
 import { attachTrim, type TrimState } from './trim';
 
@@ -56,19 +57,20 @@ interface State {
 
 export function mountGenerator(root: HTMLElement): void {
   root.innerHTML = `
-    <h1><span class="logo">●</span> Momento</h1>
-    <p class="tagline">Put 10 seconds of sound on a business card. The audio lives only in the engraving — no servers, no storage, no accounts.</p>
+    ${brandHeader(
+      'Ten seconds of sound on a business card. The audio lives only in the engraving — no servers, no storage, no accounts.',
+    )}
 
     <div class="panel">
-      <h2>1 · Audio</h2>
+      <h2>01 · Audio</h2>
       <label class="dropzone" id="dropzone">
         <input type="file" id="file-input" accept="audio/*" />
         <div><strong>Drop an audio file</strong> or tap to browse</div>
         <div class="hint">Up to ${MAX_SECONDS} seconds makes it onto the card</div>
       </label>
-      <div class="row" style="margin-top:0.6rem">
-        <button id="record-btn">🎙 Record</button>
-        <button id="preview-btn" disabled>▶ Preview selection</button>
+      <div class="row" style="margin-top:0.9rem">
+        <button id="record-btn">Record</button>
+        <button id="preview-btn" disabled>Preview selection</button>
         <span class="hint" id="audio-status"></span>
       </div>
       <div id="trim-wrap" style="display:none; margin-top:0.75rem">
@@ -78,12 +80,12 @@ export function mountGenerator(root: HTMLElement): void {
     </div>
 
     <div class="panel">
-      <h2>2 · Quality vs. density</h2>
+      <h2>02 · Quality vs. density</h2>
       <div class="tiers" id="tiers"></div>
     </div>
 
     <div class="panel">
-      <h2>3 · Card</h2>
+      <h2>03 · The card</h2>
       <div class="options">
         <label><input type="checkbox" id="invert-toggle" /> Invert QR codes for black cards (background stays white)</label>
         <label>Name line <input type="text" id="text-line" placeholder="optional" maxlength="40" /></label>
@@ -227,19 +229,19 @@ export function mountGenerator(root: HTMLElement): void {
     }
     try {
       recorder = await startRecording((ms) => {
-        recordBtn.textContent = `■ Stop (${Math.min(MAX_SECONDS, ms / 1000).toFixed(1)}s)`;
+        recordBtn.textContent = `Stop · ${Math.min(MAX_SECONDS, ms / 1000).toFixed(1)}s`;
       });
       recordBtn.classList.add('recording');
-      recordBtn.textContent = '■ Stop (0.0s)';
+      recordBtn.textContent = 'Stop · 0.0s';
       const blob = await recorder.blob;
       recorder = null;
       recordBtn.classList.remove('recording');
-      recordBtn.textContent = '🎙 Record';
+      recordBtn.textContent = 'Record';
       await loadBlob(blob);
     } catch {
       recorder = null;
       recordBtn.classList.remove('recording');
-      recordBtn.textContent = '🎙 Record';
+      recordBtn.textContent = 'Record';
       setError('Microphone access was denied.');
     }
   });
