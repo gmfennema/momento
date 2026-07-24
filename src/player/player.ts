@@ -233,11 +233,13 @@ export function mountPlayer(root: HTMLElement): void {
         pcm = await lyraDecode(data);
         pcmRate = LYRA_SAMPLE_RATE;
       } else {
-        pcm = await codec2Decode(MODE_BY_ID[modeId]!, data);
+        const decoded = await codec2Decode(MODE_BY_ID[modeId]!, data);
         // Narrowband decodes sound muffled — brighten once here (not per
-        // play) with a presence EQ; replays then cost nothing extra.
-        pcm = await enhanceNarrowband(pcm, CODEC2_SAMPLE_RATE);
-        pcmRate = CODEC2_SAMPLE_RATE;
+        // play) with a presence EQ plus harmonic bandwidth extension, which
+        // doubles the sample rate; replays then cost nothing extra.
+        const enhanced = await enhanceNarrowband(decoded, CODEC2_SAMPLE_RATE);
+        pcm = enhanced.pcm;
+        pcmRate = enhanced.sampleRate;
       }
       showReady();
     } catch {

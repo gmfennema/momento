@@ -28,8 +28,10 @@ uploads — encoding and decoding happen entirely in the browser.
 2. **Player** (`/#p`): tap scan → the camera reads codes in any order (multiple
    per frame) with live progress → chunks are reassembled → the codec named in
    the chunk headers decodes → Web Audio plays the sound. Codec 2's 8 kHz
-   decode also gets a gentle presence/high-shelf EQ (rendered once offline)
-   before playback, which de-muffles narrowband speech at zero card cost. No camera handy (or
+   decode also gets a playback-side polish (rendered once offline) before
+   playback: a gentle presence/high-shelf EQ plus harmonic bandwidth
+   extension, which resynthesizes the missing 4–7 kHz band from the speech
+   itself — de-muffling narrowband clips at zero card cost. No camera handy (or
    permission denied)? Upload photo(s) of the card instead — add shots until
    every square is captured.
 
