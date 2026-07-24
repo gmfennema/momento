@@ -3,6 +3,7 @@
 
 import {
   fileToFloat32,
+  pcmToWavBlob,
   playPcm,
   slicePcm,
   MAX_SECONDS,
@@ -65,13 +66,15 @@ export function mountGenerator(root: HTMLElement): void {
     <div class="panel">
       <h2>01 · Audio</h2>
       <label class="dropzone" id="dropzone">
-        <input type="file" id="file-input" accept="audio/*" />
+        <input type="file" id="file-input" accept="audio/*,video/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.webm,.mp4,.mov" />
         <div><strong>Drop an audio file</strong> or tap to browse</div>
-        <div class="hint">Up to ${MAX_SECONDS} seconds makes it onto the card</div>
+        <div class="hint">Supports MP3, WAV, M4A, AAC, OGG, FLAC, WebM (up to ${MAX_SECONDS} seconds)</div>
       </label>
       <div class="row" style="margin-top:0.9rem">
+        <button id="upload-btn" class="primary">Upload audio</button>
         <button id="record-btn">Record</button>
         <button id="preview-btn" disabled>Preview selection</button>
+        <button id="download-wav-btn" disabled>Download WAV</button>
         <span class="hint" id="audio-status"></span>
       </div>
       <div id="trim-wrap" style="display:none; margin-top:0.75rem">
@@ -157,10 +160,23 @@ export function mountGenerator(root: HTMLElement): void {
 
   const dropzone = $('dropzone');
   const fileInput = $<HTMLInputElement>('file-input');
+  const uploadBtn = $<HTMLButtonElement>('upload-btn');
+  const downloadWavBtn = $<HTMLButtonElement>('download-wav-btn');
 
-  async function loadBlob(blob: Blob): Promise<void> {
+  uploadBtn.addEventListener('click', () => {
+    fileInput.click();
+  });
+
+  downloadWavBtn.addEventListener('click', () => {
+    if (!state.pcm) return;
+    const sliced = slicePcm(state.pcm, state.trim.startSec, state.trim.endSec);
+    const wavBlob = pcmToWavBlob(sliced, PCM_SAMPLE_RATE);
+    downloadBlob(wavBlob, 'converted-audio.wav');
+  });
+
+  async function loadBlob(blob: Blob, fileName?: string): Promise<void> {
     setError(null);
-    $('audio-status').textContent = 'Decoding…';
+    $('audio-status').textContent = 'Decoding audio file…';
     try {
       const f32 = await fileToFloat32(blob);
       // Condition the clip for the vocoders: high-pass, drop edge silence
@@ -174,9 +190,9 @@ export function mountGenerator(root: HTMLElement): void {
       pcmEpoch++;
       encodeCache = null;
       warmUpLyra();
+      const label = fileName ? `${fileName} (${durationSec.toFixed(1)}s)` : `${durationSec.toFixed(1)}s loaded`;
       $('audio-status').textContent =
-        `${durationSec.toFixed(1)}s loaded` +
-        (trimmed >= 0.3 ? ` (dropped ${trimmed.toFixed(1)}s of silence)` : '');
+        label + (trimmed >= 0.3 ? ` (dropped ${trimmed.toFixed(1)}s of silence)` : '');
       const wrap = $('trim-wrap');
       wrap.style.display = 'block';
       const canvas = $<HTMLCanvasElement>('waveform');
@@ -187,14 +203,16 @@ export function mountGenerator(root: HTMLElement): void {
       });
       updateTrimHint();
       $<HTMLButtonElement>('preview-btn').disabled = false;
+      downloadWavBtn.disabled = false;
       scheduleUpdate();
     } catch (e) {
       state.pcm = null;
       $('audio-status').textContent = '';
+      downloadWavBtn.disabled = true;
       setError(
         e instanceof Error && e.message.includes('short')
           ? e.message
-          : 'Could not decode that file. Try a common format (mp3, m4a, wav, ogg).',
+          : 'Could not decode that file. Try a common format (mp3, m4a, wav, ogg, flac, webm).',
       );
     }
   }
@@ -210,7 +228,7 @@ export function mountGenerator(root: HTMLElement): void {
 
   fileInput.addEventListener('change', () => {
     const f = fileInput.files?.[0];
-    if (f) void loadBlob(f);
+    if (f) void loadBlob(f, f.name);
   });
   for (const ev of ['dragover', 'dragleave', 'drop'] as const) {
     dropzone.addEventListener(ev, (e) => {
@@ -218,7 +236,7 @@ export function mountGenerator(root: HTMLElement): void {
       dropzone.classList.toggle('dragover', ev === 'dragover');
       if (ev === 'drop') {
         const f = (e as DragEvent).dataTransfer?.files?.[0];
-        if (f) void loadBlob(f);
+        if (f) void loadBlob(f, f.name);
       }
     });
   }
@@ -239,7 +257,7 @@ export function mountGenerator(root: HTMLElement): void {
       recorder = null;
       recordBtn.classList.remove('recording');
       recordBtn.textContent = 'Record';
-      await loadBlob(blob);
+      await loadBlob(blob, 'Microphone Recording');
     } catch {
       recorder = null;
       recordBtn.classList.remove('recording');
