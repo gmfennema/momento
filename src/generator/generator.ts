@@ -59,6 +59,7 @@ export function mountGenerator(root: HTMLElement): void {
   root.innerHTML = `
     ${brandHeader(
       'Ten seconds of sound on a business card. The audio lives only in the engraving — no servers, no storage, no accounts.',
+      'maker',
     )}
 
     <div class="panel">
@@ -107,7 +108,7 @@ export function mountGenerator(root: HTMLElement): void {
           <button id="test-scan">I want to test-scan it</button>
         </div>
         <div class="hint" id="test-hint" style="display:none">
-          Open <strong>${playerUrl()}</strong> on your phone (or scan the card's entry code)
+          Open <a href="#p"><strong>${playerUrl()}</strong></a> on your phone (or scan the card's entry code)
           and point the camera at this screen or a printout.
         </div>
       </div>
@@ -121,6 +122,7 @@ export function mountGenerator(root: HTMLElement): void {
       <a href="https://github.com/drowe67/codec2" target="_blank" rel="noreferrer">Codec 2</a>
       (<a href="codec2/NOTICE.md" target="_blank">LGPL 2.1 notice</a>).
       Card is 3.5″ × 2″. Engrave at the exact output size — do not rescale.
+      · <a href="#p">Scan a card</a>
     </footer>
   `;
 

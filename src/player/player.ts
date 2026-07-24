@@ -16,6 +16,7 @@ export function mountPlayer(root: HTMLElement): void {
     <div class="player">
       ${brandHeader(
         'This card holds a sound. Scan every code on it to listen — the audio exists nowhere else.',
+        'scan',
       )}
       <div id="stage"></div>
     </div>
