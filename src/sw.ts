@@ -35,6 +35,33 @@ function withCoiHeaders(res: Response): Response {
 // generateSW navigateFallback behavior — instant load offline and on flaky
 // networks); shell updates arrive through new service worker versions.
 // Subresources fall through to the Workbox precache routes registered below.
+// The neural-enhancer assets (~27 MB of ONNX models in bwe/, ~13 MB of
+// onnxruntime wasm in ort/) are far beyond the precache size limit, so they
+// are cached on first use instead: cache-first keeps replays instant and
+// offline-capable without making every visitor download them up front.
+const HEAVY_CACHE = 'momento-heavy-v1';
+const HEAVY_PATH = /\/(bwe|ort)\/[^/]+$/;
+
+self.addEventListener('fetch', (event) => {
+  const url = new URL(event.request.url);
+  if (
+    event.request.method === 'GET' &&
+    url.origin === self.location.origin &&
+    HEAVY_PATH.test(url.pathname)
+  ) {
+    event.respondWith(
+      (async () => {
+        const cache = await caches.open(HEAVY_CACHE);
+        const hit = await cache.match(event.request);
+        if (hit) return hit;
+        const res = await fetch(event.request);
+        if (res.ok) void cache.put(event.request, res.clone());
+        return res;
+      })(),
+    );
+  }
+});
+
 self.addEventListener('fetch', (event) => {
   if (event.request.mode !== 'navigate') return;
   event.respondWith(

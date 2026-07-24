@@ -20,6 +20,19 @@ export default defineConfig({
   server: { headers: coiHeaders },
   preview: { headers: coiHeaders },
   plugins: [
+    // onnxruntime-web's bundle build carries a `new URL(...)` reference to
+    // its wasm binary, so Rollup emits a 13.5 MB copy under assets/ — dead
+    // weight, because ort.env.wasm.wasmPaths points at public/ort/ (kept
+    // fresh by scripts/copy-ort.mjs). Drop the duplicate from the bundle;
+    // it would otherwise also fail the service-worker precache size check.
+    {
+      name: 'drop-bundled-ort-wasm',
+      generateBundle(_options, bundle) {
+        for (const key of Object.keys(bundle)) {
+          if (/^assets\/ort-wasm.*\.wasm$/.test(key)) delete bundle[key];
+        }
+      },
+    },
     VitePWA({
       registerType: 'autoUpdate',
       strategies: 'injectManifest',
@@ -27,6 +40,9 @@ export default defineConfig({
       filename: 'sw.ts',
       injectManifest: {
         globPatterns: ['**/*.{js,css,html,wasm,tflite,webmanifest,png,svg,ico,woff2}'],
+        // The neural enhancer's runtime and models are far too big to force
+        // on every visitor — the service worker caches them on first use.
+        globIgnores: ['ort/**', 'bwe/**'],
         // the Lyra wasm is ~3.8 MB
         maximumFileSizeToCacheInBytes: 5_000_000,
       },

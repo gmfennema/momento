@@ -28,10 +28,15 @@ uploads — encoding and decoding happen entirely in the browser.
 2. **Player** (`/#p`): tap scan → the camera reads codes in any order (multiple
    per frame) with live progress → chunks are reassembled → the codec named in
    the chunk headers decodes → Web Audio plays the sound. Codec 2's 8 kHz
-   decode also gets a playback-side polish (rendered once offline) before
-   playback: a gentle presence/high-shelf EQ plus harmonic bandwidth
-   extension, which resynthesizes the missing 4–7 kHz band from the speech
-   itself — de-muffling narrowband clips at zero card cost. No camera handy (or
+   decode also gets a playback-side restoration before playback, at zero card
+   cost: the [LavaSR](https://github.com/ysharma3501/LavaSR) neural
+   speech-restoration model (fp16 ONNX, ~27 MB fetched on first use and
+   cached, run in-browser by onnxruntime-web) resynthesizes the frequencies
+   the narrowband format cannot carry, with a Linkwitz-Riley crossover
+   keeping the authentic decode below 3.6 kHz. When the model can't load —
+   offline first scan, wasm failure — playback falls back to a lightweight
+   Web Audio polish: presence/high-shelf EQ plus a harmonic exciter that
+   regenerates the 4–7 kHz band from the speech itself. No camera handy (or
    permission denied)? Upload photo(s) of the card instead — add shots until
    every square is captured.
 
@@ -114,4 +119,8 @@ LGPL 2.1 — see `public/codec2/NOTICE.md` for provenance and how to swap in
 your own build. The Lyra runtime copied to `public/lyra/` at install time is
 [lyra-codec](https://github.com/neuvideo/lyra-js) (ISC) wrapping
 [google/lyra](https://github.com/google/lyra) models (Apache 2.0) — see
-`public/lyra/NOTICE.md`.
+`public/lyra/NOTICE.md`. The neural enhancer models in `public/bwe/` are
+fp16 conversions of [LavaSR](https://github.com/ysharma3501/LavaSR) via
+[LavaSR-ONNX](https://github.com/Topping1/LavaSR-ONNX) (both Apache 2.0),
+run by [onnxruntime-web](https://github.com/microsoft/onnxruntime) (MIT)
+copied to `public/ort/` at install time — see `public/bwe/NOTICE.md`.
