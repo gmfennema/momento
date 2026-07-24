@@ -7,9 +7,28 @@
 // (for black card stock) instead draws a dark plate per QR — symbol plus
 // quiet zone — and knocks the modules out in white, so only the code tiles
 // get engraved.
+//
+// Optionally the card is TEXTURED: texture.ts fills everything the codes don't
+// use with a field of cells at the same module pitch, so the back reads as one
+// edge-to-edge mosaic with the data codes buried in it. This module owns the
+// exclusions that keep that field clear of the codes' quiet zones and the entry
+// window. "SCAN TO LISTEN" is the only writing on this face — the name and the
+// clip metadata belong to the front (front.ts).
 
 import type { BitMatrix } from './qr';
 import type { CardPlan, CellPlacement } from './layout';
+import { buildTexture, textureRects, type Rect, type TextureField } from './texture';
+
+export interface TextureOptions {
+  /** deterministic per card — reuse the card id so previews match exports */
+  seed: number;
+  /** peak dark fraction of the field (default 0.42) */
+  density?: number;
+  /** modules over which the field fades in around a code (default 1.5) */
+  fadeModules?: number;
+  /** how far the fade boundary wanders outward, in modules (default 1) */
+  boundaryJitterModules?: number;
+}
 
 export interface RenderInput {
   plan: CardPlan;
@@ -18,6 +37,8 @@ export interface RenderInput {
   entry: BitMatrix;
   inverted: boolean;
   entryLabel?: string;
+  /** fill the card with a module-aligned pixel field around the codes */
+  texture?: TextureOptions;
 }
 
 /** fraction of the entry cell reserved for the "scan me" label strip */
@@ -44,6 +65,9 @@ interface EntryGeometry {
   labelYMm: number;
   labelHeightMm: number;
   labelWidthMm: number;
+  /** the whole entry cell — kept clear of texture so the "scan me" code and
+   * its label read as a deliberate clean window in the field */
+  cell: Rect;
 }
 
 function placeSymbols(input: RenderInput): { symbols: PlacedSymbol[]; entryGeom: EntryGeometry } {
@@ -92,6 +116,7 @@ function placeSymbols(input: RenderInput): { symbols: PlacedSymbol[]; entryGeom:
         labelYMm: cell.yMm + qrSize + (cell.sizeMm - qrSize) * 0.55,
         labelHeightMm: Math.min(2.2, (cell.sizeMm - qrSize) * 0.7),
         labelWidthMm: cell.sizeMm,
+        cell: [cell.xMm, cell.yMm, cell.sizeMm, cell.sizeMm],
       };
     }
   }
@@ -122,6 +147,79 @@ function symbolRects(s: PlacedSymbol): Array<[number, number, number, number]> {
   return rects;
 }
 
+/** Light modules kept between a symbol and the nearest texture cell — the same
+ * quiet zone a plain card gives its codes, so the field costs nothing in
+ * scannability. (A dark cell touching a symbol would lengthen the first run of
+ * ZXing's 1:1:3:1:1 finder-pattern match and lose the code entirely.) */
+const TEXTURE_QUIET_MODULES = 3;
+
+/** Extra clear space around the entry cell, in units of the entry's own module
+ * size — the field stops well short of the one code a human has to find. */
+const ENTRY_WINDOW_MODULES = 2.5;
+
+function expand([x, y, w, h]: Rect, by: number): Rect {
+  return [x - by, y - by, w + 2 * by, h + 2 * by];
+}
+
+/** Everything the pixel field must stay out of, in mm. */
+function textureExclusions(
+  input: RenderInput,
+  symbols: PlacedSymbol[],
+  entryGeom: EntryGeometry,
+): Rect[] {
+  const { plan } = input;
+  const quietMm = TEXTURE_QUIET_MODULES * plan.moduleMm;
+  const rects: Rect[] = [];
+  for (const s of symbols) {
+    if (s === entryGeom.symbol) continue;
+    // Inverted codes carry their own dark plate; that plate IS the quiet zone
+    // (the scanner inverts the image), so the field may run right up to it.
+    rects.push(input.inverted ? s.plate : expand([s.xMm, s.yMm, s.sizeMm, s.sizeMm], quietMm));
+  }
+  const entryModuleMm = entryGeom.symbol.sizeMm / input.entry.size;
+  rects.push(expand(entryGeom.cell, ENTRY_WINDOW_MODULES * entryModuleMm));
+  return rects;
+}
+
+function textureField(
+  input: RenderInput,
+  symbols: PlacedSymbol[],
+  entryGeom: EntryGeometry,
+): TextureField | null {
+  if (!input.texture) return null;
+  const { plan } = input;
+  const anchor = plan.cells[0]!; // every cell sits on the module lattice
+  return buildTexture({
+    widthMm: plan.widthMm,
+    heightMm: plan.heightMm,
+    moduleMm: plan.moduleMm,
+    latticeXMm: anchor.xMm,
+    latticeYMm: anchor.yMm,
+    exclusions: textureExclusions(input, symbols, entryGeom),
+    seed: input.texture.seed,
+    density: input.texture.density,
+    fadeModules: input.texture.fadeModules,
+    boundaryJitterModules: input.texture.boundaryJitterModules,
+  });
+}
+
+export interface CardTexture {
+  /** merged dark runs, mm */
+  rects: Rect[];
+  moduleMm: number;
+  /** dark area as a fraction of the card — the maker's cue for how much longer
+   * the engraving pass runs */
+  coverage: number;
+}
+
+/** The pixel field for this card, or null when the back is left plain. */
+export function cardTexture(input: RenderInput): CardTexture | null {
+  const { symbols, entryGeom } = placeSymbols(input);
+  const field = textureField(input, symbols, entryGeom);
+  if (!field) return null;
+  return { rects: textureRects(field), moduleMm: field.moduleMm, coverage: field.coverage };
+}
+
 const FONT_STACK = 'Helvetica, Arial, sans-serif';
 
 export function renderSvg(input: RenderInput): string {
@@ -136,6 +234,24 @@ export function renderSvg(input: RenderInput): string {
       `viewBox="0 0 ${plan.widthMm} ${plan.heightMm}" shape-rendering="crispEdges">`,
     `<rect width="${plan.widthMm}" height="${plan.heightMm}" fill="#ffffff"/>`,
   );
+  const field = textureField(input, symbols, entryGeom);
+  if (field) {
+    // Same hairline-killing bleed as the symbols below.
+    const bleed = field.moduleMm * 0.02;
+    // Thousands of cells, so this path is the bulk of the file: chain the
+    // subpaths with RELATIVE moves (after `z` the current point is back at the
+    // subpath's start), which keeps every coordinate a small delta instead of a
+    // full-precision card position, and roughly halves the SVG.
+    let cx = 0;
+    let cy = 0;
+    let d = '';
+    for (const [x, y, w, h] of textureRects(field)) {
+      d += `m${fmt(x - cx)} ${fmt(y - cy)}h${fmt(w)}v${fmt(h + bleed)}h${fmt(-w)}z`;
+      cx = x;
+      cy = y;
+    }
+    if (d) parts.push(`<path d="${d}" fill="#000000"/>`);
+  }
   if (inverted) {
     const plates = symbols
       .map(({ plate: [x, y, w, h] }) => `M${fmt(x)} ${fmt(y)}h${fmt(w)}v${fmt(h)}h${fmt(-w)}z`)
@@ -164,15 +280,6 @@ export function renderSvg(input: RenderInput): string {
         `fill="${fg}">${escapeXml(label)}</text>`,
     );
   }
-  if (plan.textLine && plan.textYMm !== undefined && plan.textHeightMm !== undefined) {
-    // The name line sits on the (always white) background, never on a plate.
-    parts.push(
-      `<text x="${fmt(plan.widthMm / 2)}" y="${fmt(plan.textYMm)}" ` +
-        `font-family="${FONT_STACK}" font-size="${fmt(plan.textHeightMm)}" ` +
-        `text-anchor="middle" dominant-baseline="middle" fill="#000000">` +
-        `${escapeXml(plan.textLine)}</text>`,
-    );
-  }
   parts.push('</svg>');
   return parts.join('\n');
 }
@@ -198,6 +305,21 @@ export function drawCard(
 
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, W, H);
+  const field = textureField(input, symbols, entryGeom);
+  if (field) {
+    ctx.fillStyle = '#000000';
+    for (const [x, y, w, h] of textureRects(field)) {
+      // Snap to whole pixels so the field stays crisp in the small preview.
+      const px = Math.round(x * pxPerMm);
+      const py = Math.round(y * pxPerMm);
+      ctx.fillRect(
+        px,
+        py,
+        Math.max(1, Math.round((x + w) * pxPerMm) - px),
+        Math.max(1, Math.round((y + h) * pxPerMm) - py),
+      );
+    }
+  }
   if (inverted) {
     ctx.fillStyle = '#000000';
     for (const { plate: [x, y, w, h] } of symbols) {
@@ -244,13 +366,5 @@ export function drawCard(
     ctx.font = `bold ${entryGeom.labelHeightMm * pxPerMm}px ${FONT_STACK}`;
     const maxWidth = entryGeom.labelWidthMm * 0.95 * pxPerMm;
     ctx.fillText(label, entryGeom.labelXMm * pxPerMm, entryGeom.labelYMm * pxPerMm, maxWidth);
-  }
-  if (plan.textLine && plan.textYMm !== undefined && plan.textHeightMm !== undefined) {
-    // The name line sits on the (always white) background, never on a plate.
-    ctx.fillStyle = '#000000';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = `${plan.textHeightMm * pxPerMm}px ${FONT_STACK}`;
-    ctx.fillText(plan.textLine, (plan.widthMm / 2) * pxPerMm, plan.textYMm * pxPerMm);
   }
 }

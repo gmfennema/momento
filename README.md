@@ -17,7 +17,11 @@ uploads — encoding and decoding happen entirely in the browser.
    the [Codec 2](https://github.com/drowe67/codec2) vocoder (8 kHz) → split
    into self-describing chunks → each chunk becomes a Base45/alphanumeric QR
    code → laid out on a card image with one **entry QR** that carries the
-   player URL. Download as high-DPI PNG or vector SVG, with an invert option
+   player URL. By default the back is **textured**: a field of dark/light cells
+   at the same module pitch as the codes fills the card edge to edge, so the
+   data codes read as buried in static while the entry code sits in a clean
+   window top-left (see [Card back texture](#card-back-texture)). Download as
+   high-DPI PNG or vector SVG, with an invert option
    for black cards. The generator also renders a matching
    **card front** — a monochrome, letterpress-style face with the MOMENTO
    wordmark, the clip's waveform as fine mirrored bars, the name line, and a
@@ -57,6 +61,28 @@ codecs — a ~6s memo fits Lyra comfortably.
 Chunk headers carry a wire-format version, so cards engraved before the Lyra
 tier existed (version 0 = Codec 2) keep playing forever.
 
+### Card back texture
+
+The textured back is cosmetic, and it is never allowed to cost a scan:
+
+- Every code keeps its full **3-module light quiet zone**; the field only fades
+  in beyond it. A dark cell touching a symbol would lengthen the first run of
+  ZXing's 1:1:3:1:1 finder-pattern match and lose that code entirely.
+- For the field to reach full density *between* codes, the planner needs wider
+  gutters, which it buys out of surplus module size — it stops growing modules
+  at 0.33 mm and never drops below the 0.30 mm comfort band to make room. A clip
+  that already fills the card keeps the plain spacing and gets the field only in
+  the margins and any unused cell; the generator says so.
+- The entry code gets a clean window top-left, and **"SCAN TO LISTEN" is the
+  only writing on this face** — the name and clip metadata live on the front, so
+  nothing competes with the field.
+- Coverage is reported live (typically **+8–12%** engraved area) since it is
+  real extra laser time.
+- Turn it off with the texture toggle for the original bare-stock look.
+
+`tests/e2e-card.test.ts` scans textured cards in both polarities, including a
+blurred ~340 dpi render, and asserts every chunk still comes back.
+
 ### Cross-origin isolation
 
 The Lyra wasm uses threads, so it needs `SharedArrayBuffer`, which browsers
@@ -70,6 +96,10 @@ still get the Codec 2 tiers — the Best tier is simply disabled.
 
 - Engrave the output at **exactly 3.5″ × 2″ (88.9 × 50.8 mm)** — do not rescale.
 - Prefer the **SVG** for laser software; the PNG is 1200 dpi if you need raster.
+  With the textured back, the field is thousands of small cells — if your laser
+  software struggles with the shape count, engrave the 1200 dpi PNG in raster
+  mode instead. Budget for the extra pass time: the generator reports the added
+  engraved area.
 - For **black cards**, enable the invert toggle. The background stays white —
   only the QR codes flip: each becomes a dark plate (code + quiet zone) with
   the modules knocked out, so the laser engraves just the code tiles and the

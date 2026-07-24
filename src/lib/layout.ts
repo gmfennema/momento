@@ -115,15 +115,18 @@ export function pickAutoTier(
   return fallback.tier;
 }
 
-export type LayoutWarning = 'module-below-0.30' | 'module-below-0.25' | 'text-dropped';
+export type LayoutWarning = 'module-below-0.30' | 'module-below-0.25' | 'texture-cramped';
 
 export interface CardSpec {
   widthMm?: number;
   heightMm?: number;
   /** outer margin around all codes */
   marginMm?: number;
-  textLine?: string;
   inverted: boolean;
+  /** Lay the card out for a textured back: widen the space between codes so
+   * the pixel field can reach full density between them, paid for out of
+   * surplus module size (see planCard). */
+  textured?: boolean;
 }
 
 export interface CellPlacement {
@@ -147,31 +150,77 @@ export interface CardPlan {
   payloadPerChunk: number;
   grid: { cols: number; rows: number };
   moduleMm: number;
+  /** light modules between a symbol and its cell edge (half the code-to-code
+   * gap) — wider on a textured back so the field has room to live there */
+  gutterModules: number;
   /** modules across a chunk QR symbol (17 + 4·version) */
   symbolModules: number;
   cells: CellPlacement[];
-  textLine?: string;
-  textYMm?: number;
-  textHeightMm?: number;
   warnings: LayoutWarning[];
 }
 
 /** modules of quiet zone kept between adjacent symbols (per side) */
 const QUIET_MODULES = 3;
-const TEXT_STRIP_MM = 5;
-/** below this the text strip is dropped instead of shrinking modules */
-const MODULE_FLOOR_FOR_TEXT_MM = 0.3;
+
+/** Per-side gutters the textured back tries, widest first. The field needs
+ * roughly 3 clean modules + a fade either side of a code before it can reach
+ * full density, so 7 buys a few modules of real static between neighbours; 5
+ * gets a thinner seam; 3 is the plain-card spacing (field only in the margins
+ * and any unused cell). */
+const TEXTURE_GUTTER_LADDER = [7, 5, 3] as const;
+
+/** A textured card stops growing modules here and spends the rest on space for
+ * the field: a short clip can otherwise end up with dots far larger than any
+ * engraver or phone camera was struggling with. */
+const TEXTURE_MODULE_CAP_MM = 0.33;
+
+/** …but never below this. Wide gutters are cosmetic; scanning is not. */
+const TEXTURE_MODULE_FLOOR_MM = 0.3;
 
 export function maxChunkBytesForVersion(version: number): number {
   return maxBytesForChars(alnumCapacityL(version));
 }
 
+/**
+ * Choose the card geometry. A plain back keeps the historical behaviour:
+ * maximise module size at the standard gutter. A textured back walks the gutter
+ * ladder widest-first and takes the roomiest spacing whose modules still clear
+ * the comfort floor — so the field gets space only where the clip left some,
+ * and a dense clip silently falls back to the plain geometry rather than
+ * trading away scannability for looks.
+ */
 export function planCard(totalBytes: number, spec: CardSpec): CardPlan {
+  if (!spec.textured) return planAtGutter(totalBytes, spec, QUIET_MODULES);
+  for (const gutter of TEXTURE_GUTTER_LADDER) {
+    let plan: CardPlan;
+    try {
+      plan = planAtGutter(totalBytes, spec, gutter, TEXTURE_MODULE_CAP_MM);
+    } catch {
+      continue; // this spacing doesn't fit the card at all
+    }
+    if (plan.moduleMm < TEXTURE_MODULE_FLOOR_MM) continue;
+    if (gutter === QUIET_MODULES) plan.warnings.push('texture-cramped');
+    return plan;
+  }
+  const plan = planAtGutter(totalBytes, spec, QUIET_MODULES);
+  plan.warnings.push('texture-cramped');
+  return plan;
+}
+
+function planAtGutter(
+  totalBytes: number,
+  spec: CardSpec,
+  gutterModules: number,
+  cap?: number,
+): CardPlan {
   const widthMm = spec.widthMm ?? CARD_W_MM;
   const heightMm = spec.heightMm ?? CARD_H_MM;
-  const marginMm = spec.marginMm ?? 4;
+  // A textured back has no white border left to protect, so the codes can sit
+  // closer to the trim edge — which also buys module size to spend on gutters.
+  const marginMm = spec.marginMm ?? (spec.textured ? 3 : 4);
 
   const usableW = widthMm - 2 * marginMm;
+  const usableH = heightMm - 2 * marginMm;
 
   interface Candidate {
     version: number;
@@ -179,12 +228,11 @@ export function planCard(totalBytes: number, spec: CardSpec): CardPlan {
     payloadPerChunk: number;
     cols: number;
     rows: number;
+    /** the size actually rendered — the fitted module size, capped */
     moduleMm: number;
-    withText: boolean;
   }
 
-  const evaluate = (withText: boolean): Candidate | null => {
-    const usableH = heightMm - 2 * marginMm - (withText ? TEXT_STRIP_MM : 0);
+  const evaluate = (): Candidate | null => {
     let best: Candidate | null = null;
     for (let version = 2; version <= 16; version++) {
       const chunkBytes = maxChunkBytesForVersion(version);
@@ -195,15 +243,18 @@ export function planCard(totalBytes: number, spec: CardSpec): CardPlan {
       const cellsNeeded = chunks + 1; // + entry QR
       const symbolModules = 17 + 4 * version;
       // each cell = symbol + shared quiet zone spacing
-      const cellModules = symbolModules + 2 * QUIET_MODULES;
+      const cellModules = symbolModules + 2 * gutterModules;
       for (let cols = 1; cols <= 12; cols++) {
         const rows = Math.ceil(cellsNeeded / cols);
         const cellMm = Math.min(usableW / cols, usableH / rows);
         if (cellMm <= 0) continue;
-        const moduleMm = cellMm / cellModules;
+        const fitted = cellMm / cellModules;
+        // Candidates that all reach the cap are equally scannable, so the
+        // tie-break (fewest codes) is what picks among them.
+        const moduleMm = cap === undefined ? fitted : Math.min(fitted, cap);
         if (!best || moduleMm > best.moduleMm ||
             (moduleMm === best.moduleMm && chunks < best.chunks)) {
-          best = { version, chunks, payloadPerChunk, cols, rows, moduleMm, withText };
+          best = { version, chunks, payloadPerChunk, cols, rows, moduleMm };
         }
       }
     }
@@ -211,16 +262,8 @@ export function planCard(totalBytes: number, spec: CardSpec): CardPlan {
   };
 
   const warnings: LayoutWarning[] = [];
-  const wantText = !!spec.textLine && spec.textLine.trim().length > 0;
-  let chosen = evaluate(wantText);
+  const chosen = evaluate();
   if (!chosen) throw new Error('audio too large to fit on a card');
-  if (wantText && chosen.moduleMm < MODULE_FLOOR_FOR_TEXT_MM) {
-    const withoutText = evaluate(false);
-    if (withoutText && withoutText.moduleMm > chosen.moduleMm) {
-      chosen = withoutText;
-      warnings.push('text-dropped');
-    }
-  }
 
   if (chosen.moduleMm < 0.25) warnings.push('module-below-0.25');
   else if (chosen.moduleMm < 0.3) warnings.push('module-below-0.30');
@@ -228,10 +271,9 @@ export function planCard(totalBytes: number, spec: CardSpec): CardPlan {
   const { version, chunks, payloadPerChunk, cols, rows, moduleMm } = chosen;
   const symbolModules = 17 + 4 * version;
   const symbolMm = symbolModules * moduleMm;
-  const cellMm = (symbolModules + 2 * QUIET_MODULES) * moduleMm;
+  const cellMm = (symbolModules + 2 * gutterModules) * moduleMm;
 
   // Center the grid inside the usable area.
-  const usableH = heightMm - 2 * marginMm - (chosen.withText ? TEXT_STRIP_MM : 0);
   const gridW = cols * cellMm;
   const gridH = rows * cellMm;
   const x0 = marginMm + (usableW - gridW) / 2;
@@ -242,8 +284,8 @@ export function planCard(totalBytes: number, spec: CardSpec): CardPlan {
   for (let i = 0; i < cellsNeeded; i++) {
     const col = i % cols;
     const row = Math.floor(i / cols);
-    const xMm = x0 + col * cellMm + QUIET_MODULES * moduleMm;
-    const yMm = y0 + row * cellMm + QUIET_MODULES * moduleMm;
+    const xMm = x0 + col * cellMm + gutterModules * moduleMm;
+    const yMm = y0 + row * cellMm + gutterModules * moduleMm;
     if (i === 0) {
       cells.push({ col, row, kind: 'entry', xMm, yMm, sizeMm: symbolMm });
     } else {
@@ -259,11 +301,9 @@ export function planCard(totalBytes: number, spec: CardSpec): CardPlan {
     payloadPerChunk,
     grid: { cols, rows },
     moduleMm,
+    gutterModules,
     symbolModules,
     cells,
-    textLine: chosen.withText ? spec.textLine!.trim() : undefined,
-    textYMm: chosen.withText ? y0 + gridH + TEXT_STRIP_MM / 2 : undefined,
-    textHeightMm: chosen.withText ? TEXT_STRIP_MM * 0.6 : undefined,
     warnings,
   };
 }

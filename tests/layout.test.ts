@@ -55,17 +55,6 @@ describe('planCard', () => {
     }
   });
 
-  it('keeps text when there is room, drops it when it would crush modules', () => {
-    const roomy = planCard(1000, { inverted: false, textLine: 'Gabe Fennema' });
-    expect(roomy.textLine).toBe('Gabe Fennema');
-    expect(roomy.textYMm).toBeDefined();
-
-    const dense = planCard(4000, { inverted: false, textLine: 'Gabe Fennema' });
-    if (dense.textLine === undefined) {
-      expect(dense.warnings).toContain('text-dropped');
-    }
-  });
-
   it('auto tier picks Lyra for a short clip, backs off for a long one', () => {
     // A 6s clip at Lyra's 400 B/s is 2.4 KB — comfortably above the floor.
     const short = pickAutoTier(6, { inverted: false }, true);
@@ -94,6 +83,34 @@ describe('planCard', () => {
     for (const seconds of [1, 5, 10]) {
       expect(pickAutoTier(seconds, { inverted: false }, false).codec).toBe('codec2');
     }
+  });
+
+  it('textured backs buy gutter space out of surplus module size, never below 0.30mm', () => {
+    for (const bytes of [400, 1000, 2000, 4000]) {
+      const plain = planCard(bytes, { inverted: false });
+      const textured = planCard(bytes, { inverted: false, textured: true });
+      // Wide gutters are cosmetic: they may never drag modules under the
+      // comfort floor, and never below what the plain card manages.
+      if (textured.gutterModules > 3) {
+        expect(textured.moduleMm).toBeGreaterThanOrEqual(0.3);
+        expect(textured.warnings).not.toContain('texture-cramped');
+      } else {
+        expect(textured.warnings).toContain('texture-cramped');
+        expect(textured.moduleMm).toBeGreaterThanOrEqual(plain.moduleMm - 1e-9);
+      }
+      for (const cell of textured.cells) {
+        expect(cell.xMm).toBeGreaterThanOrEqual(0);
+        expect(cell.yMm).toBeGreaterThanOrEqual(0);
+        expect(cell.xMm + cell.sizeMm).toBeLessThanOrEqual(CARD_W_MM);
+        expect(cell.yMm + cell.sizeMm).toBeLessThanOrEqual(CARD_H_MM);
+      }
+    }
+  });
+
+  it('a plain back is unchanged by the texture work', () => {
+    const plan = planCard(2000, { inverted: false });
+    expect(plan.gutterModules).toBe(3);
+    expect(plan.warnings).not.toContain('texture-cramped');
   });
 
   it('non-overlapping cells', () => {

@@ -40,7 +40,10 @@ test('generator: upload → stats → card preview → downloads enabled', async
     buffer: wavFixture(),
   });
 
-  await expect(page.locator('#audio-status')).toContainText('loaded', { timeout: 15_000 });
+  // Named uploads report "<file> (<n>s)"; a mic recording reports "<n>s loaded".
+  await expect(page.locator('#audio-status')).toContainText('fixture.wav (2.9s)', {
+    timeout: 15_000,
+  });
   await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 20_000 });
   await expect(page.locator('#stats-line')).toContainText('data codes');
   await expect(page.locator('#stats-line')).toContainText('mm modules');
@@ -75,6 +78,31 @@ test('generator: upload → stats → card preview → downloads enabled', async
   expect(frontDownload.suggestedFilename()).toBe('momento-card-front.svg');
 });
 
+/** Ink coverage of the back preview, plus how dark a band down the card's left
+ * edge is — the edge only carries ink when the pixel field is on. */
+const sampleBack = (page: import('@playwright/test').Page) =>
+  page.locator('#card-preview').evaluate((c: HTMLCanvasElement) => {
+    const { width, height } = c;
+    const d = c.getContext('2d')!.getImageData(0, 0, width, height).data;
+    let dark = 0;
+    let total = 0;
+    let edgeDark = 0;
+    let edgeTotal = 0;
+    const edgeCols = Math.round(width * 0.02);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x += 4) {
+        const v = d[(y * width + x) * 4]!;
+        total++;
+        if (v < 128) dark++;
+        if (x < edgeCols) {
+          edgeTotal++;
+          if (v < 128) edgeDark++;
+        }
+      }
+    }
+    return { darkFraction: dark / total, edgeFraction: edgeDark / edgeTotal };
+  });
+
 test('generator: invert toggle inverts the codes but keeps the background white', async ({ page }) => {
   await page.goto('/momento/');
   await page.setInputFiles('#file-input', {
@@ -83,29 +111,47 @@ test('generator: invert toggle inverts the codes but keeps the background white'
     buffer: wavFixture(),
   });
   await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 20_000 });
+  // Isolate the polarity change from the pixel field, which also adds ink.
+  await page.uncheck('#texture-toggle');
+  await page.waitForTimeout(700);
 
-  const sample = () =>
-    page.locator('#card-preview').evaluate((c: HTMLCanvasElement) => {
-      const { width, height } = c;
-      const d = c.getContext('2d')!.getImageData(0, 0, width, height).data;
-      let dark = 0;
-      let total = 0;
-      for (let i = 0; i < d.length; i += 16) {
-        total++;
-        if (d[i]! < 128) dark++;
-      }
-      return { corner: d[0]!, darkFraction: dark / total };
-    });
-  const plain = await sample();
-  expect(plain.corner).toBeGreaterThan(200); // white background
+  const corner = () =>
+    page.locator('#card-preview').evaluate(
+      (c: HTMLCanvasElement) => c.getContext('2d')!.getImageData(0, 0, 1, 1).data[0]!,
+    );
+  const plain = await sampleBack(page);
+  expect(await corner()).toBeGreaterThan(200); // white background
   await page.check('#invert-toggle');
   await page.waitForTimeout(700); // debounce + re-render
-  const inverted = await sample();
+  const inverted = await sampleBack(page);
   // Background stays white (only the marks get engraved)...
-  expect(inverted.corner).toBeGreaterThan(200);
+  expect(await corner()).toBeGreaterThan(200);
   // ...while each QR flips to a dark plate with white modules, so the card
   // gets substantially darker overall.
   expect(inverted.darkFraction).toBeGreaterThan(plain.darkFraction * 1.5);
+});
+
+test('generator: the pixel field fills the card edge to edge, and is optional', async ({ page }) => {
+  await page.goto('/momento/');
+  await page.setInputFiles('#file-input', {
+    name: 'fixture.wav',
+    mimeType: 'audio/wav',
+    buffer: wavFixture(),
+  });
+  await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 20_000 });
+
+  // On by default: the card reports its extra engraved area and the outer edge
+  // (bare stock on a plain back) now carries ink.
+  await expect(page.locator('#stats-line')).toContainText('engraved area');
+  const textured = await sampleBack(page);
+  expect(textured.edgeFraction).toBeGreaterThan(0.1);
+
+  await page.uncheck('#texture-toggle');
+  await page.waitForTimeout(700);
+  await expect(page.locator('#stats-line')).not.toContainText('engraved area');
+  const plain = await sampleBack(page);
+  expect(plain.edgeFraction).toBeLessThan(0.01);
+  expect(textured.darkFraction).toBeGreaterThan(plain.darkFraction * 1.15);
 });
 
 test('player: scan screen shows guidance when camera is unavailable', async ({ page }) => {

@@ -32,7 +32,7 @@ import {
   renderFrontSvg,
   type FrontInput,
 } from '../lib/front';
-import { drawCard, renderSvg, type RenderInput } from '../lib/render';
+import { cardTexture, drawCard, renderSvg, type RenderInput } from '../lib/render';
 import { brandHeader } from '../lib/brand';
 import { startRecording, type RecorderHandle } from './recorder';
 import { attachTrim, type TrimState } from './trim';
@@ -45,6 +45,7 @@ interface State {
   trim: TrimState;
   tierKey: 'auto' | Tier['key'];
   inverted: boolean;
+  textured: boolean;
   textLine: string;
   voice: string;
   recordedAt: string; // 'YYYY-MM-DD' (front metadata line), '' if cleared
@@ -91,8 +92,9 @@ export function mountGenerator(root: HTMLElement): void {
     <div class="panel">
       <h2>03 · The card</h2>
       <div class="options">
+        <label><input type="checkbox" id="texture-toggle" checked /> Bury the codes in a pixel field (edge-to-edge texture)</label>
         <label><input type="checkbox" id="invert-toggle" /> Invert QR codes for black cards (background stays white)</label>
-        <label>Name line <input type="text" id="text-line" placeholder="optional" maxlength="40" /></label>
+        <label>Name line (front) <input type="text" id="text-line" placeholder="optional" maxlength="40" /></label>
         <label>Voice <input type="text" id="voice-line" placeholder="e.g. Emma" maxlength="24" /></label>
         <label>Recorded <input type="date" id="recorded-date" /></label>
       </div>
@@ -139,6 +141,7 @@ export function mountGenerator(root: HTMLElement): void {
     trim: { startSec: 0, endSec: 0 },
     tierKey: 'auto',
     inverted: false,
+    textured: true,
     textLine: '',
     voice: '',
     recordedAt: todayIso(),
@@ -311,14 +314,11 @@ export function mountGenerator(root: HTMLElement): void {
   renderTierSelection();
 
   // The single card spec used for tier decisions, tier stats, AND the real
-  // plan — if these diverged (e.g. one forgot the text line, whose 5mm strip
-  // shrinks the modules), the auto tier could approve a card the final plan
+  // plan — if these diverged (e.g. one forgot that a textured back lays the
+  // codes out differently), the auto tier could approve a card the final plan
   // renders below the scannability floor.
   function cardSpec(): CardSpec {
-    return {
-      inverted: state.inverted,
-      textLine: state.textLine.trim() ? state.textLine : undefined,
-    };
+    return { inverted: state.inverted, textured: state.textured };
   }
 
   /** The concrete tier the current selection encodes with. */
@@ -358,6 +358,10 @@ export function mountGenerator(root: HTMLElement): void {
 
   $<HTMLInputElement>('invert-toggle').addEventListener('change', (e) => {
     state.inverted = (e.target as HTMLInputElement).checked;
+    scheduleUpdate();
+  });
+  $<HTMLInputElement>('texture-toggle').addEventListener('change', (e) => {
+    state.textured = (e.target as HTMLInputElement).checked;
     scheduleUpdate();
   });
   $<HTMLInputElement>('text-line').addEventListener('input', (e) => {
@@ -423,12 +427,14 @@ export function mountGenerator(root: HTMLElement): void {
         matrices: chunks.map((c) => chunkMatrix(c, plan.qrVersion)),
         entry: entryMatrix(playerUrl()),
         inverted: state.inverted,
+        // Seeded by card id so the preview, PNG, and SVG are the same field.
+        texture: state.textured ? { seed: state.cardId } : undefined,
       };
       state.encoded = encoded;
       state.plan = plan;
       state.renderInput = renderInput;
-      // The front shows the same slice of audio the back encodes — but keeps
-      // the name line even when the back drops it to protect scannability.
+      // The front shows the same slice of audio the back encodes, and carries
+      // all the human-facing type — the back is codes and "SCAN TO LISTEN".
       state.frontInput = {
         bars: computeWaveformBars(
           slicePcm(state.pcm, state.trim.startSec, state.trim.endSec),
@@ -467,10 +473,12 @@ export function mountGenerator(root: HTMLElement): void {
 
     const seconds = state.trim.endSec - state.trim.startSec;
     const codecLabel = tier.codec === 'lyra' ? 'Lyra 3.2 kbps' : `Codec 2 ${tier.mode}`;
+    const field = cardTexture(renderInput);
     $('stats-line').textContent =
       `${seconds.toFixed(1)}s audio · ${codecLabel} · ${state.encoded!.length} bytes · ` +
       `${plan.chunkCount} data codes (QR v${plan.qrVersion}) + 1 entry code · ` +
-      `${plan.moduleMm.toFixed(2)}mm modules · ${plan.grid.cols}×${plan.grid.rows} grid`;
+      `${plan.moduleMm.toFixed(2)}mm modules · ${plan.grid.cols}×${plan.grid.rows} grid` +
+      (field ? ` · +${(field.coverage * 100).toFixed(0)}% engraved area (texture)` : '');
 
     const w = $('warnings');
     w.innerHTML = '';
@@ -484,8 +492,10 @@ export function mountGenerator(root: HTMLElement): void {
         '⚠ Modules are below 0.30mm — scanning still works but needs a clean engraving and a decent camera.',
       );
     }
-    if (plan.warnings.includes('text-dropped')) {
-      msgs.push('ℹ The name line was dropped to keep the codes scannable.');
+    if (plan.warnings.includes('texture-cramped')) {
+      msgs.push(
+        'ℹ This clip fills the card, so the pixel field only reaches the margins — the codes keep their full quiet zones. A shorter clip or a lower quality tier lets the field run between them.',
+      );
     }
     for (const m of msgs) {
       const div = document.createElement('div');
