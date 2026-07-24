@@ -3,10 +3,11 @@
 // States: IDLE → SCANNING | PHOTOS → DECODING → READY → PLAYING (+ CAMERA_DENIED).
 
 import { playPcm, type Playback } from '../lib/audio';
+import { enhanceNeuralNarrowband, neuralBweSupported, warmUpNeuralBwe } from '../lib/bwe';
 import { codec2Decode, CODEC2_SAMPLE_RATE } from '../lib/codec2';
 import { enhanceNarrowband } from '../lib/enhance';
 import { lyraDecode, lyraSupported, warmUpLyra, LYRA_SAMPLE_RATE } from '../lib/lyra';
-import { ChunkCollector, LYRA_MODE_3200, MODE_BY_ID, WIRE_LYRA } from '../lib/chunk';
+import { ChunkCollector, LYRA_MODE_3200, MODE_BY_ID, WIRE_CODEC2, WIRE_LYRA } from '../lib/chunk';
 import { brandHeader } from '../lib/brand';
 import { scanPhoto, startScanner, type ScannerHandle } from './scanner';
 
@@ -40,9 +41,11 @@ export function mountPlayer(root: HTMLElement): void {
   }
 
   function updateProgress(count: HTMLElement, strip: HTMLElement, collector: ChunkCollector): void {
-    // The first chunk names the codec — fetch the Lyra wasm + models (~7 MB)
-    // only for cards that actually use it, overlapping the remaining scan.
+    // The first chunk names the codec — fetch that codec's wasm + models
+    // (Lyra ~7 MB, neural enhancer ~27 MB) only for cards that actually use
+    // them, overlapping the download with the remaining scan.
     if (collector.wireVersion === WIRE_LYRA) warmUpLyra();
+    else if (collector.wireVersion === WIRE_CODEC2) warmUpNeuralBwe();
     const { got, total, missing } = collector.progress;
     count.textContent = total ? `${got} of ${total}` : 'Looking…';
     if (total && strip.childElementCount !== total) {
@@ -210,6 +213,35 @@ export function mountPlayer(root: HTMLElement): void {
     stage.querySelector('#upload')!.addEventListener('click', () => input.click());
   }
 
+  /** Codec 2 decodes get enhanced before playback: the neural
+   * bandwidth-extension model when it can load, the lightweight EQ+exciter
+   * render otherwise. Either way replays cost nothing extra. */
+  async function enhanceCodec2(decoded: Int16Array, note: HTMLElement): Promise<void> {
+    if (neuralBweSupported()) {
+      try {
+        const enhanced = await enhanceNeuralNarrowband(
+          decoded,
+          CODEC2_SAMPLE_RATE,
+          (loaded, total) => {
+            note.textContent =
+              loaded < total
+                ? `Restoring the voice — fetching the model (${(loaded / 1048576).toFixed(1)} of ${Math.round(total / 1048576)} MB, one-time)…`
+                : 'Restoring the voice with the neural model…';
+          },
+        );
+        pcm = enhanced.pcm;
+        pcmRate = enhanced.sampleRate;
+        return;
+      } catch {
+        // No network for the model, or the wasm failed — fall through to the
+        // always-available DSP polish.
+      }
+    }
+    const enhanced = await enhanceNarrowband(decoded, CODEC2_SAMPLE_RATE);
+    pcm = enhanced.pcm;
+    pcmRate = enhanced.sampleRate;
+  }
+
   async function showDecoding(collector: ChunkCollector): Promise<void> {
     scanner = null;
     stage.innerHTML = `<p class="hint">Rebuilding the audio from the card…</p>`;
@@ -233,11 +265,9 @@ export function mountPlayer(root: HTMLElement): void {
         pcm = await lyraDecode(data);
         pcmRate = LYRA_SAMPLE_RATE;
       } else {
-        pcm = await codec2Decode(MODE_BY_ID[modeId]!, data);
-        // Narrowband decodes sound muffled — brighten once here (not per
-        // play) with a presence EQ; replays then cost nothing extra.
-        pcm = await enhanceNarrowband(pcm, CODEC2_SAMPLE_RATE);
-        pcmRate = CODEC2_SAMPLE_RATE;
+        const decoded = await codec2Decode(MODE_BY_ID[modeId]!, data);
+        const note = stage.querySelector<HTMLElement>('.hint')!;
+        await enhanceCodec2(decoded, note);
       }
       showReady();
     } catch {

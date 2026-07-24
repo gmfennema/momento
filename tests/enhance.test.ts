@@ -1,7 +1,8 @@
-// Playback presence EQ: the Web Audio render itself only exists in a real
-// browser, so these tests cover the plumbing around it — int16↔float
-// conversion, peak safety, and the fall-back-to-raw-decode paths — using a
-// minimal fake OfflineAudioContext whose "render" is an identity pass.
+// Playback enhancement (presence EQ + bandwidth extension): the Web Audio
+// render itself only exists in a real browser, so these tests cover the
+// plumbing around it — int16↔float conversion, the 2× output rate, peak
+// safety, and the fall-back-to-raw-decode paths — using a minimal fake
+// OfflineAudioContext whose "render" is a filterless 2× upsample.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { enhanceNarrowband, limitPeak } from '../src/lib/enhance';
@@ -14,41 +15,58 @@ function makePcm(): Int16Array {
   return pcm;
 }
 
+interface FakeBuffer {
+  getChannelData(c: number): Float32Array;
+}
+
 class FakeOfflineAudioContext {
   destination = {};
-  private src: { buffer: { getChannelData(c: number): Float32Array } | null } | null = null;
+  private src: { buffer: FakeBuffer | null } | null = null;
   constructor(
     public channels: number,
     public length: number,
     public sampleRate: number,
   ) {}
-  createBuffer(_channels: number, len: number): { getChannelData(c: number): Float32Array } {
+  createBuffer(_channels: number, len: number, _rate: number): FakeBuffer {
     const data = new Float32Array(len);
     return { getChannelData: () => data };
   }
   createBufferSource(): {
-    buffer: { getChannelData(c: number): Float32Array } | null;
+    buffer: FakeBuffer | null;
     connect(n: unknown): unknown;
     start(): void;
   } {
     const node = {
-      buffer: null as { getChannelData(c: number): Float32Array } | null,
+      buffer: null as FakeBuffer | null,
       connect: (n: unknown) => n,
       start: () => {},
     };
     this.src = node;
     return node;
   }
-  async startRendering(): Promise<{ getChannelData(c: number): Float32Array }> {
-    return this.src!.buffer!;
+  // Stand-in for the real render: no filtering, just the source resampled up
+  // to the context rate (nearest-neighbor), so values round-trip exactly.
+  async startRendering(): Promise<FakeBuffer> {
+    const src = this.src!.buffer!.getChannelData(0);
+    const out = new Float32Array(this.length);
+    const step = src.length / this.length;
+    for (let i = 0; i < out.length; i++) out[i] = src[Math.floor(i * step)]!;
+    return { getChannelData: () => out };
   }
 }
 
-class FakeBiquadFilterNode {
+class FakeNode {
   constructor(_ctx: unknown, _opts: unknown) {}
   connect(n: unknown): unknown {
     return n;
   }
+}
+
+function stubWebAudio(): void {
+  vi.stubGlobal('OfflineAudioContext', FakeOfflineAudioContext);
+  vi.stubGlobal('BiquadFilterNode', FakeNode);
+  vi.stubGlobal('WaveShaperNode', FakeNode);
+  vi.stubGlobal('GainNode', FakeNode);
 }
 
 afterEach(() => {
@@ -56,10 +74,11 @@ afterEach(() => {
 });
 
 describe('enhanceNarrowband', () => {
-  it('returns the raw decode when Web Audio is unavailable (node)', async () => {
+  it('returns the raw decode at its own rate when Web Audio is unavailable (node)', async () => {
     const pcm = makePcm();
     const out = await enhanceNarrowband(pcm, 8000);
-    expect(out).toBe(pcm);
+    expect(out.pcm).toBe(pcm);
+    expect(out.sampleRate).toBe(8000);
   });
 
   it('returns the raw decode when the render throws (unsupported rate)', async () => {
@@ -73,24 +92,30 @@ describe('enhanceNarrowband', () => {
     );
     const pcm = makePcm();
     const out = await enhanceNarrowband(pcm, 8000);
-    expect(out).toBe(pcm);
+    expect(out.pcm).toBe(pcm);
+    expect(out.sampleRate).toBe(8000);
   });
 
-  it('round-trips samples through an identity render within quantization error', async () => {
-    vi.stubGlobal('OfflineAudioContext', FakeOfflineAudioContext);
-    vi.stubGlobal('BiquadFilterNode', FakeBiquadFilterNode);
+  it('renders at twice the decode rate and round-trips samples within quantization error', async () => {
+    stubWebAudio();
     const pcm = makePcm();
     const out = await enhanceNarrowband(pcm, 8000);
-    expect(out).not.toBe(pcm);
-    expect(out.length).toBe(pcm.length);
+    expect(out.pcm).not.toBe(pcm);
+    expect(out.sampleRate).toBe(16000);
+    // Same duration at double the rate.
+    expect(out.pcm.length).toBe(pcm.length * 2);
+    // The fake render is a nearest-neighbor upsample, so every input sample
+    // survives at its doubled position.
     for (let i = 0; i < pcm.length; i++) {
-      expect(Math.abs(out[i]! - pcm[i]!)).toBeLessThanOrEqual(1);
+      expect(Math.abs(out.pcm[i * 2]! - pcm[i]!)).toBeLessThanOrEqual(1);
     }
   });
 
   it('leaves empty clips alone', async () => {
     const pcm = new Int16Array(0);
-    expect(await enhanceNarrowband(pcm, 8000)).toBe(pcm);
+    const out = await enhanceNarrowband(pcm, 8000);
+    expect(out.pcm).toBe(pcm);
+    expect(out.sampleRate).toBe(8000);
   });
 });
 

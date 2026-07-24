@@ -6,7 +6,7 @@
   "description": "Audio on a business card — encode ≤10s of audio into laser-engravable QR codes, decode by scanning the card. No server, no storage.",
   "license": "MIT",
   "scripts": {
-    "postinstall": "node scripts/copy-zxing.mjs && node scripts/copy-lyra.mjs",
+    "postinstall": "node scripts/copy-zxing.mjs && node scripts/copy-lyra.mjs && node scripts/copy-ort.mjs",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
@@ -17,6 +17,7 @@
   "dependencies": {
     "@fontsource/cormorant-garamond": "^5.3.0",
     "lyra-codec": "1.1.1",
+    "onnxruntime-web": "^1.27.0",
     "qrcode": "^1.5.4",
     "zxing-wasm": "^3.1.2"
   },
