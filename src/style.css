@@ -255,8 +255,8 @@ canvas.waveform {
 
 .tiers {
   display: grid;
-  /* four tiles (Auto + three tiers) — wrap instead of overflowing */
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  /* six tiles (Auto + five tiers) — wrap instead of overflowing */
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 0.7rem;
 }
 

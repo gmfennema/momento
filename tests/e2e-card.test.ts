@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 import { base45Decode } from '../src/lib/base45';
 import { ChunkCollector, splitPayload } from '../src/lib/chunk';
 import { codec2Decode, codec2Encode } from '../src/lib/codec2';
-import { planCard, TIERS } from '../src/lib/layout';
+import { pickAutoTier, planCard, TIERS } from '../src/lib/layout';
 import { chunkMatrix, entryMatrix } from '../src/lib/qr';
 import { renderSvg, type RenderInput } from '../src/lib/render';
 import { rmsEnergy, synthPcm } from './helpers/synth-audio';
@@ -45,15 +45,35 @@ function blur(png: PNG): void {
   pass(0, 1);
 }
 
+/** A phone photo of an engraved card rather than a clean render: soft focus,
+ * the low contrast of engraved metal or dark stock, and sensor noise. This is
+ * what separates a scannable module size from an unscannable one — a crisp
+ * rasterization decodes almost any density and proves nothing about density. */
+function degrade(png: PNG, seed = 1): void {
+  blur(png);
+  blur(png);
+  const d = png.data;
+  let s = seed | 1;
+  for (let i = 0; i < d.length; i += 4) {
+    s = (s * 1103515245 + 12345) >>> 0;
+    const noise = (s / 0xffffffff - 0.5) * 46;
+    for (let c = 0; c < 3; c++) {
+      // squeeze full black/white into 55..205, then add noise
+      d[i + c] = Math.max(0, Math.min(255, 55 + (d[i + c]! / 255) * 150 + noise));
+    }
+  }
+}
+
 async function scanCardSvg(
   svg: string,
-  opts: { widthPx?: number; blurred?: boolean } = {},
+  opts: { widthPx?: number; blurred?: boolean; degraded?: boolean } = {},
 ): Promise<string[]> {
   // ~600 dpi ≈ 23.6 px/mm — a realistic engraving/scanning resolution.
   const resvg = new Resvg(svg, { fitTo: { mode: 'width', value: opts.widthPx ?? 2100 } });
   const rendered = resvg.render();
   const png = PNG.sync.read(Buffer.from(rendered.asPng()));
-  if (opts.blurred) blur(png);
+  if (opts.degraded) degrade(png);
+  else if (opts.blurred) blur(png);
   const imageData = {
     data: new Uint8ClampedArray(png.data.buffer, png.data.byteOffset, png.data.byteLength),
     width: png.width,
@@ -140,6 +160,45 @@ describe('end-to-end card pipeline', () => {
         }
       }, 120_000);
     }
+  }
+
+  // What the auto tier's module floor is FOR. A full-length clip is the worst
+  // case, and this is the shot that used to lose it: ~900 px across the card
+  // (a phone that isn't held close, ≈3 camera pixels per module), soft, noisy
+  // and low-contrast. At the old floor these cards came out at QR v11/0.30mm
+  // and gave up nothing at this resolution; they need ~1000 px.
+  for (const textured of [false, true]) {
+    it(`auto tier at 10s${textured ? ' (textured)' : ''}: reads from a degraded 900px shot`, async () => {
+      const spec = { inverted: false, textured };
+      // Lyra needs a browser; at 10s auto is a Codec 2 rung regardless.
+      const tier = pickAutoTier(10, spec, false);
+      expect(tier.codec).toBe('codec2');
+      const pcm = synthPcm(10);
+      const bits = await payloadFor(tier, pcm);
+      const plan = planCard(bits.length, spec);
+      const chunks = splitPayload(bits, tier.wireVersion, tier.modeId, plan.payloadPerChunk, 0xc0de);
+      const texts = await scanCardSvg(
+        renderSvg({
+          plan,
+          matrices: chunks.map((c) => chunkMatrix(c, plan.qrVersion)),
+          entry: entryMatrix(PLAYER_URL),
+          inverted: false,
+          texture: textured ? { seed: 0xc0de } : undefined,
+        }),
+        { widthPx: 900, degraded: true },
+      );
+      expect(texts).toContain(PLAYER_URL);
+      const collector = new ChunkCollector();
+      for (const text of texts) {
+        if (text === PLAYER_URL) continue;
+        try {
+          collector.add(base45Decode(text));
+        } catch {
+          continue;
+        }
+      }
+      expect(collector.progress.missing).toEqual([]);
+    }, 120_000);
   }
 
   // The texture's whole risk is that dark cells near a code bleed into its
