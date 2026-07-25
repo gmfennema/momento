@@ -16,6 +16,7 @@ import { preparePcm } from '../lib/preprocess';
 import { decimate2 } from '../lib/resample';
 import { randomCardId, splitPayload } from '../lib/chunk';
 import {
+  AUTO_MODULE_FLOOR_MM,
   estimatePayloadBytes,
   pickAutoTier,
   planCard,
@@ -281,7 +282,7 @@ export function mountGenerator(root: HTMLElement): void {
     {
       key: 'auto',
       label: 'Auto',
-      blurb: 'Picks the highest quality that keeps this clip easy to scan.',
+      blurb: `Highest quality whose dots stay at least ${AUTO_MODULE_FLOOR_MM.toFixed(2)}mm — the size a phone camera finds without a perfect shot.`,
     },
     ...TIERS,
   ];

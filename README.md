@@ -48,15 +48,28 @@ uploads — encoding and decoding happen entirely in the browser.
 
 | Tier | Codec | 10s payload | Character |
 |---|---|---|---|
-| Auto (default) | picks per clip | — | Highest quality that keeps the card reliably scannable |
+| Auto (default) | picks per clip | — | Highest quality whose dots stay ≥ 0.32 mm |
 | Compact | Codec 2 700C | ~1.0 KB | Fewest/largest codes; robotic but intelligible voice |
+| Lean | Codec 2 1400 | ~1.8 KB | Just under Balanced, for a roomier full-length card |
 | Balanced | Codec 2 1600 | ~2.0 KB | Decent speech quality, comfortably scannable |
-| Best | Lyra 3.2 kbps | ~4.0 KB | Natural wideband voice; dense card, needs precise engraving |
+| Rich | Codec 2 2400 | ~3.0 KB | Clearer Codec 2 voice; denser card, best on shorter clips |
+| Best | Lyra 3.2 kbps | ~4.0 KB | Natural wideband voice; densest card, short clips only |
+
+The rungs sit deliberately close together in bytes/second. QR versions
+quantize hard — one version step is ~7% of module size — so a coarse ladder
+makes Auto surrender far more audio quality than the density actually
+required; Codec 2 1400 and 2400 exist to shed just enough bytes to cross one
+version boundary.
 
 The generator reports the physical module (dot) size live and warns below
 0.30 mm (scanning gets touchy) and 0.25 mm (many engravers can't hold it).
-The Auto tier never goes below 0.25 mm; shorter clips therefore get better
-codecs — a ~6s memo fits Lyra comfortably.
+**Auto never goes below 0.32 mm** — deliberately above its own soft warning, so
+it never hands back a card the UI then complains about. On a standard card that
+also holds the data codes at QR version 10 or lower (≤ 57 modules a side), which
+matters as much as the millimetres: every extra version is 4 more modules the
+camera must resolve across the same symbol. Shorter clips therefore get better
+codecs — a ~4s memo still fits Lyra; a full 10s lands on Codec 2. Any tier can
+still be forced by hand, warnings and all.
 
 Chunk headers carry a wire-format version, so cards engraved before the Lyra
 tier existed (version 0 = Codec 2) keep playing forever.
@@ -70,9 +83,9 @@ The textured back is cosmetic, and it is never allowed to cost a scan:
   ZXing's 1:1:3:1:1 finder-pattern match and lose that code entirely.
 - For the field to reach full density *between* codes, the planner needs wider
   gutters, which it buys out of surplus module size — it stops growing modules
-  at 0.33 mm and never drops below the 0.30 mm comfort band to make room. A clip
-  that already fills the card keeps the plain spacing and gets the field only in
-  the margins and any unused cell; the generator says so.
+  at 0.35 mm and never drops below the 0.32 mm scannability floor to make room.
+  A clip that already fills the card keeps the plain spacing and gets the field
+  only in the margins and any unused cell; the generator says so.
 - The entry code gets a clean window top-left, and **"SCAN TO LISTEN" is the
   only writing on this face** — the name and clip metadata live on the front, so
   nothing competes with the field.

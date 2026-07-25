@@ -13,7 +13,7 @@ import {
   type Codec2Mode,
   type CodecModeId,
 } from './chunk';
-import { LYRA_BYTES_PER_SEC } from './lyra';
+import { LYRA_BYTES_PER_FRAME, LYRA_BYTES_PER_SEC } from './lyra';
 
 /** Standard US business card. */
 export const CARD_W_MM = 88.9;
@@ -32,10 +32,14 @@ export function alnumCapacityL(version: number): number {
 }
 
 interface TierBase {
-  key: 'compact' | 'balanced' | 'best';
+  key: 'compact' | 'lean' | 'balanced' | 'rich' | 'best';
   wireVersion: number;
   modeId: CodecModeId;
   bytesPerSec: number;
+  /** Bytes the codec emits per frame. Both codecs work in whole frames, so this
+   * is exactly how far a real encode can overshoot the nominal rate — and
+   * therefore all the slack planning needs (see estimatePayloadBytes). */
+  frameBytes: number;
   label: string;
   blurb: string;
 }
@@ -43,6 +47,14 @@ interface TierBase {
 export type Tier = TierBase &
   ({ codec: 'codec2'; mode: Codec2Mode } | { codec: 'lyra' });
 
+/**
+ * The quality ladder, cheapest first. The rungs are deliberately close
+ * together in bytes/second: QR versions quantize hard (one version step is a
+ * ~7% change in module size), so a coarse ladder forces the auto tier to give
+ * up far more audio quality than the density problem actually required. The
+ * Codec 2 1400 and 2400 rungs exist to shed just enough bytes to cross one
+ * version boundary.
+ */
 export const TIERS: readonly Tier[] = [
   {
     key: 'compact',
@@ -51,8 +63,20 @@ export const TIERS: readonly Tier[] = [
     wireVersion: WIRE_CODEC2,
     modeId: 6,
     bytesPerSec: 100,
+    frameBytes: 4,
     label: 'Compact',
     blurb: 'Smallest codes, easiest to engrave & scan. Voice sounds robotic.',
+  },
+  {
+    key: 'lean',
+    codec: 'codec2',
+    mode: '1400',
+    wireVersion: WIRE_CODEC2,
+    modeId: 3,
+    bytesPerSec: 175,
+    frameBytes: 7,
+    label: 'Lean',
+    blurb: 'Just under Balanced, for a roomier card on a long clip.',
   },
   {
     key: 'balanced',
@@ -61,8 +85,20 @@ export const TIERS: readonly Tier[] = [
     wireVersion: WIRE_CODEC2,
     modeId: 2,
     bytesPerSec: 200,
+    frameBytes: 8,
     label: 'Balanced',
     blurb: 'Decent speech quality with comfortably scannable codes.',
+  },
+  {
+    key: 'rich',
+    codec: 'codec2',
+    mode: '2400',
+    wireVersion: WIRE_CODEC2,
+    modeId: 1,
+    bytesPerSec: 300,
+    frameBytes: 6,
+    label: 'Rich',
+    blurb: 'Clearer Codec 2 voice. Denser card, so best on shorter clips.',
   },
   {
     key: 'best',
@@ -70,25 +106,31 @@ export const TIERS: readonly Tier[] = [
     wireVersion: WIRE_LYRA,
     modeId: LYRA_MODE_3200,
     bytesPerSec: LYRA_BYTES_PER_SEC,
+    frameBytes: LYRA_BYTES_PER_FRAME,
     label: 'Best',
-    blurb: 'Natural, clear voice (Lyra neural codec). Denser card; playback needs a modern phone.',
+    blurb: 'Natural, clear voice (Lyra neural codec). Densest card; short clips only.',
   },
 ] as const;
 
-/** Conservative payload estimate for planning before the real encode exists.
- * Codec 2 output wobbles a few bytes around the nominal rate and the Lyra
- * path pads to whole 20 ms frames (< 16 bytes either way), so plan with slack
- * rather than let the real encode land one chunk denser than the tier
- * decision assumed. */
+/** Payload estimate for planning before the real encode exists. Both codecs
+ * emit whole frames, so the real encode can exceed the nominal rate by at most
+ * one frame and never by more — plan with exactly that much slack. (A rounder,
+ * larger guess is not free: 16 bytes of imaginary payload is enough to push a
+ * plan up a QR version and shrink every module on the card.) */
 export function estimatePayloadBytes(seconds: number, tier: Tier): number {
-  return Math.ceil(seconds * tier.bytesPerSec) + 16;
+  return Math.ceil(seconds * tier.bytesPerSec) + tier.frameBytes;
 }
 
-/** The auto tier refuses to go denser than this. 0.25 mm is where engravers
- * and phone cameras start genuinely failing (the hard warning); the softer
- * 0.30 mm comfort band is still allowed — those cards scan fine when cleanly
- * engraved, and the UI keeps its warning. */
-export const AUTO_MODULE_FLOOR_MM = 0.25;
+/** The auto tier refuses to go denser than this — the dot size a phone camera
+ * can find on an engraved card without a perfect shot. It is deliberately
+ * above the 0.30 mm soft warning: auto should never hand back a card the UI
+ * would then warn about. Manual tiers may still go denser (with warnings).
+ *
+ * Raising the floor also holds the QR version down (a standard card mostly
+ * lands on 4 columns, where this floor means version ≤ 10, 57 modules a side),
+ * and the version matters as much as the millimetres: every extra version is 4
+ * more modules the camera has to resolve across the same symbol. */
+export const AUTO_MODULE_FLOOR_MM = 0.32;
 
 /** Pick the highest-quality tier whose card keeps modules at a reliably
  * scannable size for this clip length — i.e. spend the card's real capacity
@@ -172,10 +214,11 @@ const TEXTURE_GUTTER_LADDER = [7, 5, 3] as const;
 /** A textured card stops growing modules here and spends the rest on space for
  * the field: a short clip can otherwise end up with dots far larger than any
  * engraver or phone camera was struggling with. */
-const TEXTURE_MODULE_CAP_MM = 0.33;
+const TEXTURE_MODULE_CAP_MM = 0.35;
 
-/** …but never below this. Wide gutters are cosmetic; scanning is not. */
-const TEXTURE_MODULE_FLOOR_MM = 0.3;
+/** …but never below this. Wide gutters are cosmetic; scanning is not — so the
+ * field may not push a card below what the auto tier targets. */
+const TEXTURE_MODULE_FLOOR_MM = AUTO_MODULE_FLOOR_MM;
 
 export function maxChunkBytesForVersion(version: number): number {
   return maxBytesForChars(alnumCapacityL(version));
@@ -215,9 +258,12 @@ function planAtGutter(
 ): CardPlan {
   const widthMm = spec.widthMm ?? CARD_W_MM;
   const heightMm = spec.heightMm ?? CARD_H_MM;
-  // A textured back has no white border left to protect, so the codes can sit
-  // closer to the trim edge — which also buys module size to spend on gutters.
-  const marginMm = spec.marginMm ?? (spec.textured ? 3 : 4);
+  // Every millimetre of margin is module size the codes never get: at the
+  // 4-column layout a standard card ends up in, 1 mm off each side is ~2.5%
+  // more dot. 3 mm is still a normal safe zone for trimming and engraver
+  // alignment; a textured back has no white border left to protect, so its
+  // codes can sit a little closer to the trim edge still.
+  const marginMm = spec.marginMm ?? (spec.textured ? 2.5 : 3);
 
   const usableW = widthMm - 2 * marginMm;
   const usableH = heightMm - 2 * marginMm;
