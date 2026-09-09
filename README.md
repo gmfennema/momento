@@ -37,42 +37,51 @@ uploads — encoding and decoding happen entirely in the browser.
    speech-restoration model (fp16 ONNX, ~27 MB fetched on first use and
    cached, run in-browser by onnxruntime-web) resynthesizes the frequencies
    the narrowband format cannot carry, with a Linkwitz-Riley crossover
-   keeping the authentic decode below 3.6 kHz. When the model can't load —
-   offline first scan, wasm failure — playback falls back to a lightweight
-   Web Audio polish: presence/high-shelf EQ plus a harmonic exciter that
-   regenerates the 4–7 kHz band from the speech itself. No camera handy (or
+   keeping the authentic decode below 3.6 kHz. Inference runs in a worker, so
+   the page keeps painting (and shows an elapsed-time counter) instead of
+   looking frozen, and it runs under a watchdog. When the model can't load or
+   doesn't finish — offline first scan, wasm failure, a dead worker —
+   playback falls back to a lightweight Web Audio polish: presence/high-shelf
+   EQ plus a harmonic exciter that regenerates the 4–7 kHz band from the
+   speech itself, and says so on the play screen. No camera handy (or
    permission denied)? Upload photo(s) of the card instead — add shots until
    every square is captured.
 
 ### Quality tiers
 
-| Tier | Codec | 10s payload | Character |
+Three tiers, cheapest first. Every one of them is *restored on playback* — the
+Codec 2 rungs by the neural bandwidth-extension model, the Lyra rung by being
+wideband already — so the real difference between them is how much of the
+original voice the card carries, and how long a clip fits.
+
+| Tier | Codec | Max clip at the 0.32 mm floor | Character |
 |---|---|---|---|
-| Auto (default) | picks per clip | — | Highest quality whose dots stay ≥ 0.32 mm |
-| Compact | Codec 2 700C | ~1.0 KB | Fewest/largest codes; robotic but intelligible voice |
-| Lean | Codec 2 1400 | ~1.8 KB | Just under Balanced, for a roomier full-length card |
-| Balanced | Codec 2 1600 | ~2.0 KB | Decent speech quality, comfortably scannable |
-| Rich | Codec 2 2400 | ~3.0 KB | Clearer Codec 2 voice; denser card, best on shorter clips |
-| Best | Lyra 3.2 kbps | ~4.0 KB | Natural wideband voice; densest card, short clips only |
+| Basic | Codec 2 1400 | 10.0s | Standard voice, restored on playback. Roomiest codes; fits a full-length clip |
+| Good | Codec 2 2400 | 5.9s | Clearer voice, restored on playback. Denser card |
+| Best (default) | Lyra 3.2 kbps | 4.4s | Natural wideband voice straight from the neural codec. Densest card |
 
-The rungs sit deliberately close together in bytes/second. QR versions
-quantize hard — one version step is ~7% of module size — so a coarse ladder
-makes Auto surrender far more audio quality than the density actually
-required; Codec 2 1400 and 2400 exist to shed just enough bytes to cross one
-version boundary.
+**No card is ever laid out below 0.32 mm modules.** That is a hard floor, not a
+warning: the generator reports the physical module (dot) size live, and a tier
+whose card would fall under the floor is simply *unavailable* — dimmed, with a
+**Trim to X.Xs** button that shortens the trim window just enough to unlock it.
+The tier tiles show each rung's live limit ("fits up to 5.9s") against the
+current trim, so the trade is visible before anything is engraved. The tier you
+pick is a preference: if a later edit makes the clip too long for it, the card
+quietly drops to the best rung that still fits and says so.
 
-The generator reports the physical module (dot) size live and warns below
-0.30 mm (scanning gets touchy) and 0.25 mm (many engravers can't hold it).
-**Auto never goes below 0.32 mm** — deliberately above its own soft warning, so
-it never hands back a card the UI then complains about. On a standard card that
-also holds the data codes at QR version 10 or lower (≤ 57 modules a side), which
-matters as much as the millimetres: every extra version is 4 more modules the
-camera must resolve across the same symbol. Shorter clips therefore get better
-codecs — a ~4s memo still fits Lyra; a full 10s lands on Codec 2. Any tier can
-still be forced by hand, warnings and all.
+The floor is deliberately above the old 0.30 mm soft warning, and on a standard
+card it also holds the data codes at QR version 10 or lower (≤ 57 modules a
+side), which matters as much as the millimetres: every extra version is 4 more
+modules the camera must resolve across the same symbol.
+
+Each tile also has a **▶ Preview** button (and the card panel a **▶ Hear this
+card**). Preview runs the *player's* pipeline — encode, decode, neural
+restoration and all — so you hear exactly what a scanned card will play, not an
+approximation of it. Playback tells you which restoration your device managed.
 
 Chunk headers carry a wire-format version, so cards engraved before the Lyra
-tier existed (version 0 = Codec 2) keep playing forever.
+tier existed (version 0 = Codec 2), or with Codec 2 modes no longer offered,
+keep playing forever.
 
 ### Card back texture
 

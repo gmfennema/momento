@@ -388,6 +388,13 @@ function loadRuntime(): Promise<BweRuntime> {
       // without it the wasm still runs, just single-threaded.
       const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 1 : 1;
       ort.env.wasm.numThreads = typeof SharedArrayBuffer !== 'undefined' ? Math.min(4, cores) : 1;
+      // Run inference off the main thread. Without this the wasm blocks the UI
+      // thread outright for the whole decode — on a phone the player looks
+      // frozen, status text never even paints, and the elapsed-time counter
+      // can't tick. Threads buy almost nothing here (a 10s clip restores in
+      // ~3s either way); getting off the UI thread buys everything. Verified
+      // working with the `onnxruntime-web/wasm` bundle build imported above.
+      ort.env.wasm.proxy = true;
       const [backboneBytes, specHeadBytes] = await Promise.all([
         fetchWithProgress(`${base}${MODEL_FILES.backbone}`, reportProgress),
         fetchWithProgress(`${base}${MODEL_FILES.specHead}`, reportProgress),
@@ -408,8 +415,20 @@ function loadRuntime(): Promise<BweRuntime> {
   return runtime;
 }
 
+/** Drop the memoized runtime so the next call rebuilds the wasm worker and
+ * re-fetches the models. Callers use this after a watchdog timeout: whatever
+ * wedged the worker is not going to unwedge itself. */
+export function resetNeuralBwe(): void {
+  runtime = null;
+  bytesLoaded = 0;
+}
+
 /** Browser-side neural enhancement of a narrowband decode. Downloads the
- * model on first use (~27 MB, cached by the service worker afterwards). */
+ * model on first use (~27 MB, cached by the service worker afterwards).
+ *
+ * NOTE: this promise has no timeout of its own, and a wasm worker that dies
+ * silently never rejects — callers MUST bound it with a watchdog (and call
+ * resetNeuralBwe on expiry). lib/restore.ts is the shared place that does. */
 export async function enhanceNeuralNarrowband(
   pcm: Int16Array,
   sampleRate: number,

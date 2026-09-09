@@ -9,18 +9,32 @@ export interface TrimState {
   endSec: number;
 }
 
+export interface TrimHandle {
+  /** Live state — the same object handed to onChange. */
+  state: TrimState;
+  /** Move the window programmatically (the tier tiles' "trim to fit" action).
+   * Clamps to the clip and redraws, then reports through onChange. */
+  set(startSec: number, endSec: number): void;
+}
+
 export function attachTrim(
   canvas: HTMLCanvasElement,
   pcm: Int16Array,
   onChange: (t: TrimState) => void,
-): TrimState {
+): TrimHandle {
   const durationSec = pcm.length / PCM_SAMPLE_RATE;
   const state: TrimState = { startSec: 0, endSec: Math.min(durationSec, MAX_SECONDS) };
 
   const redraw = () => drawWaveform(canvas, pcm, PCM_SAMPLE_RATE, [state.startSec, state.endSec]);
   redraw();
 
-  if (durationSec <= MAX_SECONDS) return state; // nothing to trim
+  const set = (startSec: number, endSec: number): void => {
+    const len = Math.max(0.1, Math.min(MAX_SECONDS, durationSec, endSec - startSec));
+    state.startSec = Math.max(0, Math.min(durationSec - len, startSec));
+    state.endSec = state.startSec + len;
+    redraw();
+    onChange(state);
+  };
 
   const secAt = (clientX: number): number => {
     const rect = canvas.getBoundingClientRect();
@@ -30,8 +44,12 @@ export function attachTrim(
   type Drag = { kind: 'move' | 'start' | 'end'; grabOffset: number } | null;
   let drag: Drag = null;
   const EDGE_SEC = durationSec * 0.03;
+  // Dragging is meaningful whenever the *selection* is shorter than the clip —
+  // which a short clip can also become, once a tier tile trims it to fit.
+  const draggable = (): boolean => state.endSec - state.startSec < durationSec - 1e-6;
 
   canvas.addEventListener('pointerdown', (e) => {
+    if (!draggable()) return;
     canvas.setPointerCapture(e.pointerId);
     const s = secAt(e.clientX);
     if (Math.abs(s - state.startSec) < EDGE_SEC) drag = { kind: 'start', grabOffset: 0 };
@@ -70,5 +88,5 @@ export function attachTrim(
   canvas.addEventListener('pointerup', release);
   canvas.addEventListener('pointercancel', release);
 
-  return state;
+  return { state, set };
 }

@@ -32,7 +32,7 @@ export function alnumCapacityL(version: number): number {
 }
 
 interface TierBase {
-  key: 'compact' | 'lean' | 'balanced' | 'rich' | 'best';
+  key: 'basic' | 'good' | 'best';
   wireVersion: number;
   modeId: CodecModeId;
   bytesPerSec: number;
@@ -47,58 +47,43 @@ interface TierBase {
 export type Tier = TierBase &
   ({ codec: 'codec2'; mode: Codec2Mode } | { codec: 'lyra' });
 
+/** Longest clip that may go on a card. Lives here rather than in lib/audio.ts
+ * (browser-only) so the planner — and its node tests — can reason about the
+ * whole duration range without pulling in Web Audio. */
+export const MAX_SECONDS = 10;
+
 /**
- * The quality ladder, cheapest first. The rungs are deliberately close
- * together in bytes/second: QR versions quantize hard (one version step is a
- * ~7% change in module size), so a coarse ladder forces the auto tier to give
- * up far more audio quality than the density problem actually required. The
- * Codec 2 1400 and 2400 rungs exist to shed just enough bytes to cross one
- * version boundary.
+ * The quality ladder, cheapest first — three rungs, each a real choice rather
+ * than a byte-shaving variant of its neighbour. Every rung is playable on
+ * every card: the two Codec 2 rungs are restored by the neural model at
+ * playback time (see lib/bwe.ts), so the ladder is about how much of the
+ * original voice the card carries, not about how good it can sound.
+ *
+ * A rung is only offered when its card clears MODULE_FLOOR_MM, so the honest
+ * difference between them is how long a clip they can hold.
  */
 export const TIERS: readonly Tier[] = [
   {
-    key: 'compact',
-    codec: 'codec2',
-    mode: '700C',
-    wireVersion: WIRE_CODEC2,
-    modeId: 6,
-    bytesPerSec: 100,
-    frameBytes: 4,
-    label: 'Compact',
-    blurb: 'Smallest codes, easiest to engrave & scan. Voice sounds robotic.',
-  },
-  {
-    key: 'lean',
+    key: 'basic',
     codec: 'codec2',
     mode: '1400',
     wireVersion: WIRE_CODEC2,
     modeId: 3,
     bytesPerSec: 175,
     frameBytes: 7,
-    label: 'Lean',
-    blurb: 'Just under Balanced, for a roomier card on a long clip.',
+    label: 'Basic',
+    blurb: 'Standard voice, restored by the neural model on playback. Roomiest codes — fits a full-length clip.',
   },
   {
-    key: 'balanced',
-    codec: 'codec2',
-    mode: '1600',
-    wireVersion: WIRE_CODEC2,
-    modeId: 2,
-    bytesPerSec: 200,
-    frameBytes: 8,
-    label: 'Balanced',
-    blurb: 'Decent speech quality with comfortably scannable codes.',
-  },
-  {
-    key: 'rich',
+    key: 'good',
     codec: 'codec2',
     mode: '2400',
     wireVersion: WIRE_CODEC2,
     modeId: 1,
     bytesPerSec: 300,
     frameBytes: 6,
-    label: 'Rich',
-    blurb: 'Clearer Codec 2 voice. Denser card, so best on shorter clips.',
+    label: 'Good',
+    blurb: 'Clearer voice, restored by the neural model on playback. Denser card, so medium-length clips.',
   },
   {
     key: 'best',
@@ -108,7 +93,7 @@ export const TIERS: readonly Tier[] = [
     bytesPerSec: LYRA_BYTES_PER_SEC,
     frameBytes: LYRA_BYTES_PER_FRAME,
     label: 'Best',
-    blurb: 'Natural, clear voice (Lyra neural codec). Densest card; short clips only.',
+    blurb: 'Natural wideband voice straight from the Lyra neural codec. Densest card; short clips only.',
   },
 ] as const;
 
@@ -121,40 +106,61 @@ export function estimatePayloadBytes(seconds: number, tier: Tier): number {
   return Math.ceil(seconds * tier.bytesPerSec) + tier.frameBytes;
 }
 
-/** The auto tier refuses to go denser than this — the dot size a phone camera
- * can find on an engraved card without a perfect shot. It is deliberately
- * above the 0.30 mm soft warning: auto should never hand back a card the UI
- * would then warn about. Manual tiers may still go denser (with warnings).
+/** No card is ever laid out denser than this — the dot size a phone camera
+ * can find on an engraved card without a perfect shot. It is a hard floor for
+ * every tier (deliberately above the 0.30 mm soft warning), not a preference:
+ * a tier whose card would fall below it is simply not offered until the clip
+ * is short enough, so the generator can never hand back a card the UI would
+ * then complain about.
  *
- * Raising the floor also holds the QR version down (a standard card mostly
- * lands on 4 columns, where this floor means version ≤ 10, 57 modules a side),
- * and the version matters as much as the millimetres: every extra version is 4
- * more modules the camera has to resolve across the same symbol. */
-export const AUTO_MODULE_FLOOR_MM = 0.32;
+ * The floor also holds the QR version down (a standard card mostly lands on 4
+ * columns, where this floor means version ≤ 10, 57 modules a side), and the
+ * version matters as much as the millimetres: every extra version is 4 more
+ * modules the camera has to resolve across the same symbol. */
+export const MODULE_FLOOR_MM = 0.32;
 
-/** Pick the highest-quality tier whose card keeps modules at a reliably
- * scannable size for this clip length — i.e. spend the card's real capacity
- * instead of a fixed preset. Falls back to the least dense card when even the
- * compact tier is below the floor. */
-export function pickAutoTier(
+/** Does this clip length fit this tier at a scannable density? */
+export function tierFits(seconds: number, tier: Tier, spec: CardSpec): boolean {
+  try {
+    return planCard(estimatePayloadBytes(seconds, tier), spec).moduleMm >= MODULE_FLOOR_MM;
+  } catch {
+    return false; // doesn't fit on the card at all
+  }
+}
+
+/** Longest clip (in 0.1s steps) this tier can hold on this card. Module size
+ * is monotone non-increasing in payload bytes, so the durations that fit are a
+ * prefix of the range and a binary search over tenths is exact. Returns 0 when
+ * even the shortest clip is too dense — which the ladder's cheapest rung never
+ * is, but callers shouldn't have to know that. */
+export function maxSecondsForTier(tier: Tier, spec: CardSpec): number {
+  const steps = Math.round(MAX_SECONDS * 10);
+  if (tierFits(MAX_SECONDS, tier, spec)) return MAX_SECONDS;
+  if (!tierFits(0.1, tier, spec)) return 0;
+  let fits = 1;
+  let fails = steps;
+  while (fails - fits > 1) {
+    const mid = (fits + fails) >> 1;
+    if (tierFits(mid / 10, tier, spec)) fits = mid;
+    else fails = mid;
+  }
+  return fits / 10;
+}
+
+/** The best-sounding tier this clip can actually have: the last rung in TIERS
+ * order whose card still clears the floor. Nothing below the floor is ever
+ * returned — a clip that fits no rung at all is a hard error, not a warning. */
+export function bestTierThatFits(
   seconds: number,
   spec: CardSpec,
   allowLyra: boolean,
 ): Tier {
-  let fallback: { tier: Tier; moduleMm: number } | null = null;
-  for (const tier of [...TIERS].reverse()) {
+  for (let i = TIERS.length - 1; i >= 0; i--) {
+    const tier = TIERS[i]!;
     if (tier.codec === 'lyra' && !allowLyra) continue;
-    let plan: CardPlan;
-    try {
-      plan = planCard(estimatePayloadBytes(seconds, tier), spec);
-    } catch {
-      continue; // doesn't fit on the card at all
-    }
-    if (plan.moduleMm >= AUTO_MODULE_FLOOR_MM) return tier;
-    if (!fallback || plan.moduleMm > fallback.moduleMm) fallback = { tier, moduleMm: plan.moduleMm };
+    if (tierFits(seconds, tier, spec)) return tier;
   }
-  if (!fallback) throw new Error('audio too large to fit on a card');
-  return fallback.tier;
+  throw new Error('audio too large to fit on a card');
 }
 
 export type LayoutWarning = 'module-below-0.30' | 'module-below-0.25' | 'texture-cramped';
@@ -217,8 +223,8 @@ const TEXTURE_GUTTER_LADDER = [7, 5, 3] as const;
 const TEXTURE_MODULE_CAP_MM = 0.35;
 
 /** …but never below this. Wide gutters are cosmetic; scanning is not — so the
- * field may not push a card below what the auto tier targets. */
-const TEXTURE_MODULE_FLOOR_MM = AUTO_MODULE_FLOOR_MM;
+ * field may not push a card below the universal scannability floor. */
+const TEXTURE_MODULE_FLOOR_MM = MODULE_FLOOR_MM;
 
 export function maxChunkBytesForVersion(version: number): number {
   return maxBytesForChars(alnumCapacityL(version));

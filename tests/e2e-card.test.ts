@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 import { base45Decode } from '../src/lib/base45';
 import { ChunkCollector, splitPayload } from '../src/lib/chunk';
 import { codec2Decode, codec2Encode } from '../src/lib/codec2';
-import { pickAutoTier, planCard, TIERS } from '../src/lib/layout';
+import { bestTierThatFits, planCard, TIERS } from '../src/lib/layout';
 import { chunkMatrix, entryMatrix } from '../src/lib/qr';
 import { renderSvg, type RenderInput } from '../src/lib/render';
 import { rmsEnergy, synthPcm } from './helpers/synth-audio';
@@ -110,7 +110,7 @@ describe('end-to-end card pipeline', () => {
     { inverted: true, textured: true },
   ];
   for (const tier of TIERS) {
-    for (const { inverted, textured } of tier.key === 'balanced' ? variants : variants.slice(0, 2)) {
+    for (const { inverted, textured } of tier.key === 'good' ? variants : variants.slice(0, 2)) {
       const label = [inverted ? 'inverted' : null, textured ? 'textured' : null]
         .filter(Boolean)
         .join(', ');
@@ -162,17 +162,17 @@ describe('end-to-end card pipeline', () => {
     }
   }
 
-  // What the auto tier's module floor is FOR. A full-length clip is the worst
-  // case, and this is the shot that used to lose it: ~900 px across the card
-  // (a phone that isn't held close, ≈3 camera pixels per module), soft, noisy
-  // and low-contrast. At the old floor these cards came out at QR v11/0.30mm
-  // and gave up nothing at this resolution; they need ~1000 px.
+  // What the module floor is FOR. A full-length clip is the worst case, and
+  // this is the shot that used to lose it: ~900 px across the card (a phone
+  // that isn't held close, ≈3 camera pixels per module), soft, noisy and
+  // low-contrast. At the old floor these cards came out at QR v11/0.30mm and
+  // gave up nothing at this resolution; they need ~1000 px.
   for (const textured of [false, true]) {
-    it(`auto tier at 10s${textured ? ' (textured)' : ''}: reads from a degraded 900px shot`, async () => {
+    it(`the tier chosen at 10s${textured ? ' (textured)' : ''}: reads from a degraded 900px shot`, async () => {
       const spec = { inverted: false, textured };
-      // Lyra needs a browser; at 10s auto is a Codec 2 rung regardless.
-      const tier = pickAutoTier(10, spec, false);
-      expect(tier.codec).toBe('codec2');
+      // Lyra needs a browser; at 10s only the cheapest rung fits regardless.
+      const tier = bestTierThatFits(10, spec, false);
+      expect(tier.key).toBe('basic');
       const pcm = synthPcm(10);
       const bits = await payloadFor(tier, pcm);
       const plan = planCard(bits.length, spec);
@@ -206,9 +206,9 @@ describe('end-to-end card pipeline', () => {
   // every chunk at a lower resolution WITH blur — and that a plain card of the
   // same clip is no better off, i.e. the field costs nothing.
   for (const textured of [false, true]) {
-    it(`compact${textured ? ' (textured)' : ''}: survives a soft, low-res scan`, async () => {
+    it(`basic${textured ? ' (textured)' : ''}: survives a soft, low-res scan`, async () => {
       const pcm = synthPcm(10);
-      const tier = TIERS.find((t) => t.key === 'compact')!;
+      const tier = TIERS.find((t) => t.key === 'basic')!;
       const bits = await payloadFor(tier, pcm);
       const plan = planCard(bits.length, { inverted: false, textured });
       const chunks = splitPayload(bits, tier.wireVersion, tier.modeId, plan.payloadPerChunk, 0xc0de);

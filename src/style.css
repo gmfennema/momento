@@ -195,6 +195,13 @@ button.recording {
   color: #16090a;
 }
 
+/* Inline actions that live inside a card/tile rather than a row of their own. */
+button.small {
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  padding: 0.38rem 0.85rem;
+}
+
 .row {
   display: flex;
   gap: 0.7rem;
@@ -255,8 +262,8 @@ canvas.waveform {
 
 .tiers {
   display: grid;
-  /* six tiles (Auto + five tiers) — wrap instead of overflowing */
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  /* three tiles — wrap instead of overflowing */
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 0.7rem;
 }
 
@@ -282,8 +289,18 @@ canvas.waveform {
   transition: border-color 0.2s, background 0.2s;
 }
 
-.tier:hover:not(:disabled) {
+.tier:hover:not([aria-disabled='true']) {
   background: rgba(232, 227, 216, 0.04);
+}
+
+/* Too dense for this clip (or unsupported here): dimmed, but still live — the
+ * "trim to fit" button inside it is the way out. */
+.tier.unavailable {
+  opacity: 0.55;
+}
+
+.tier[aria-disabled='true'] {
+  cursor: default;
 }
 
 .tier.selected {
@@ -310,6 +327,29 @@ canvas.waveform {
   font-size: 0.78rem;
   color: var(--accent-dim);
   font-variant-numeric: tabular-nums;
+}
+
+.tier .tier-note {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 0.3rem;
+}
+
+.tier .tier-note:empty {
+  display: none;
+}
+
+.tier .preview-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.65rem;
+}
+
+.tier .preview-row .hint {
+  margin-top: 0;
+  font-size: 0.75rem;
 }
 
 .options {

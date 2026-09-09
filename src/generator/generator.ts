@@ -10,21 +10,28 @@ import {
   PCM_SAMPLE_RATE,
   type Playback,
 } from '../lib/audio';
-import { codec2Encode } from '../lib/codec2';
-import { lyraEncode, lyraSupported, warmUpLyra } from '../lib/lyra';
+import { warmUpNeuralBwe } from '../lib/bwe';
+import { lyraSupported, warmUpLyra } from '../lib/lyra';
 import { preparePcm } from '../lib/preprocess';
-import { decimate2 } from '../lib/resample';
 import { randomCardId, splitPayload } from '../lib/chunk';
 import {
-  AUTO_MODULE_FLOOR_MM,
+  bestTierThatFits,
   estimatePayloadBytes,
-  pickAutoTier,
+  maxSecondsForTier,
+  MODULE_FLOOR_MM,
   planCard,
+  tierFits,
   TIERS,
   type CardPlan,
   type CardSpec,
   type Tier,
 } from '../lib/layout';
+import {
+  decodeForPlayback,
+  encodeForTier,
+  previewForTier,
+  type RestoredAudio,
+} from '../lib/restore';
 import { chunkMatrix, entryMatrix } from '../lib/qr';
 import {
   computeWaveformBars,
@@ -36,15 +43,22 @@ import {
 import { cardTexture, drawCard, renderSvg, type RenderInput } from '../lib/render';
 import { brandHeader } from '../lib/brand';
 import { startRecording, type RecorderHandle } from './recorder';
-import { attachTrim, type TrimState } from './trim';
+import { attachTrim, type TrimHandle, type TrimState } from './trim';
 
 const PNG_DPI = 1200;
 const PX_PER_MM = PNG_DPI / 25.4;
 
+/** Shown under a preview that came back from the DSP fallback rather than the
+ * neural model — the same caveat the player shows a listener. */
+const DSP_NOTE = 'neural restoration unavailable here — this is the standard restoration';
+
 interface State {
   pcm: Int16Array | null;
   trim: TrimState;
-  tierKey: 'auto' | Tier['key'];
+  /** The maker's *preference*. The card uses it when the clip fits it and the
+   * next best fitting tier otherwise — nothing below the module floor is ever
+   * built, so a preference can be aspirational without producing a bad card. */
+  tierKey: Tier['key'];
   inverted: boolean;
   textured: boolean;
   textLine: string;
@@ -52,10 +66,19 @@ interface State {
   recordedAt: string; // 'YYYY-MM-DD' (front metadata line), '' if cleared
   cardId: number;
   // derived
+  tier: Tier | null;
   encoded: Uint8Array | null;
   plan: CardPlan | null;
   renderInput: RenderInput | null;
   frontInput: FrontInput | null;
+}
+
+/** One encode of one trim window, plus the playback it restores to once the
+ * maker has previewed it. Shared by the card pipeline and the tier previews so
+ * neither pays for the other's work twice. */
+interface EncodeEntry {
+  bytes: Uint8Array;
+  restored?: RestoredAudio;
 }
 
 export function mountGenerator(root: HTMLElement): void {
@@ -75,7 +98,7 @@ export function mountGenerator(root: HTMLElement): void {
       <div class="row" style="margin-top:0.9rem">
         <button id="upload-btn" class="primary">Upload audio</button>
         <button id="record-btn">Record</button>
-        <button id="preview-btn" disabled>Preview selection</button>
+        <button id="preview-btn" disabled>Play original</button>
         <button id="download-wav-btn" disabled>Download WAV</button>
         <span class="hint" id="audio-status"></span>
       </div>
@@ -86,7 +109,10 @@ export function mountGenerator(root: HTMLElement): void {
     </div>
 
     <div class="panel">
-      <h2>02 · Quality vs. density</h2>
+      <h2>02 · Voice quality</h2>
+      <p class="hint" style="margin-top:0">Every tier is restored by a neural model when the card is
+        scanned, and no card ever gets dots smaller than ${MODULE_FLOOR_MM.toFixed(2)}mm — a tier that
+        would is simply unavailable until the clip is trimmed. Preview any tier to hear the card.</p>
       <div class="tiers" id="tiers"></div>
     </div>
 
@@ -111,6 +137,7 @@ export function mountGenerator(root: HTMLElement): void {
           <button class="primary" id="dl-front-svg">Front SVG</button>
           <button class="primary" id="dl-png">Back PNG (${PNG_DPI} dpi)</button>
           <button class="primary" id="dl-svg">Back SVG (vector)</button>
+          <button id="hear-card">▶ Hear this card</button>
           <button id="test-scan">I want to test-scan it</button>
         </div>
         <div class="hint" id="test-hint" style="display:none">
@@ -140,13 +167,14 @@ export function mountGenerator(root: HTMLElement): void {
   const state: State = {
     pcm: null,
     trim: { startSec: 0, endSec: 0 },
-    tierKey: 'auto',
+    tierKey: 'best',
     inverted: false,
     textured: true,
     textLine: '',
     voice: '',
     recordedAt: todayIso(),
     cardId: randomCardId(),
+    tier: null,
     encoded: null,
     plan: null,
     renderInput: null,
@@ -155,10 +183,31 @@ export function mountGenerator(root: HTMLElement): void {
 
   let playback: Playback | null = null;
   let recorder: RecorderHandle | null = null;
+  // Tier-preview playback state (see startPreview): declared up here because
+  // the first renderTiers() runs while the tiles are being built.
+  let previewBusyKey: Tier['key'] | null = null;
+  let previewPlaying: { key: Tier['key']; playback: Playback } | null = null;
+  let previewSeq = 0;
+  let trimHandle: TrimHandle | null = null;
   let encodeSeq = 0;
   let debounceTimer = 0;
   let pcmEpoch = 0; // bumped when a new clip loads, invalidating the encode cache
-  let encodeCache: { key: string; bytes: Uint8Array } | null = null;
+  const encodeCache = new Map<string, EncodeEntry>();
+
+  function cacheKey(tier: Tier): string {
+    return `${tier.key}|${pcmEpoch}|${state.trim.startSec}|${state.trim.endSec}`;
+  }
+
+  function rememberEncode(key: string, entry: EncodeEntry): void {
+    encodeCache.set(key, entry);
+    // Dragging the trim window mints a new key per pointer move; keep only the
+    // last few so a long session doesn't hold on to every encode ever made.
+    while (encodeCache.size > 8) {
+      const oldest = encodeCache.keys().next().value;
+      if (oldest === undefined) break;
+      encodeCache.delete(oldest);
+    }
+  }
 
   // --- audio input ---
 
@@ -189,22 +238,27 @@ export function mountGenerator(root: HTMLElement): void {
       const durationSec = prepared.pcm.length / PCM_SAMPLE_RATE;
       if (durationSec < 0.3) throw new Error('That clip is too short.');
       const trimmed = prepared.trimmedLeadSec + prepared.trimmedTailSec;
+      stopPreview();
       state.pcm = prepared.pcm;
       state.cardId = randomCardId();
       pcmEpoch++;
-      encodeCache = null;
+      encodeCache.clear();
       warmUpLyra();
+      // Previewing a tier runs the player's restoration, so start the 27 MB
+      // model download now rather than at the first click on ▶ Preview.
+      warmUpNeuralBwe();
       const label = fileName ? `${fileName} (${durationSec.toFixed(1)}s)` : `${durationSec.toFixed(1)}s loaded`;
       $('audio-status').textContent =
         label + (trimmed >= 0.3 ? ` (dropped ${trimmed.toFixed(1)}s of silence)` : '');
       const wrap = $('trim-wrap');
       wrap.style.display = 'block';
       const canvas = $<HTMLCanvasElement>('waveform');
-      state.trim = attachTrim(canvas, prepared.pcm, (t) => {
+      trimHandle = attachTrim(canvas, prepared.pcm, (t) => {
         state.trim = t;
         updateTrimHint();
         scheduleUpdate();
       });
+      state.trim = trimHandle.state;
       updateTrimHint();
       $<HTMLButtonElement>('preview-btn').disabled = false;
       downloadWavBtn.disabled = false;
@@ -224,8 +278,10 @@ export function mountGenerator(root: HTMLElement): void {
   function updateTrimHint(): void {
     const dur = state.pcm ? state.pcm.length / PCM_SAMPLE_RATE : 0;
     const sel = state.trim.endSec - state.trim.startSec;
+    // A short clip can also end up with a window on it — trimming to fit a
+    // denser tier is exactly that.
     $('trim-hint').textContent =
-      dur > MAX_SECONDS
+      sel < dur - 0.05
         ? `Selected ${sel.toFixed(1)}s of ${dur.toFixed(1)}s — drag the window (or its edges) to choose what goes on the card.`
         : `Whole clip (${dur.toFixed(1)}s) goes on the card.`;
   }
@@ -272,88 +328,251 @@ export function mountGenerator(root: HTMLElement): void {
 
   $('preview-btn').addEventListener('click', () => {
     if (!state.pcm) return;
+    stopPreview();
     playback?.stop();
     playback = playPcm(slicePcm(state.pcm, state.trim.startSec, state.trim.endSec));
   });
 
   // --- tiers ---
 
-  const tiles: Array<{ key: State['tierKey']; label: string; blurb: string }> = [
-    {
-      key: 'auto',
-      label: 'Auto',
-      blurb: `Highest quality whose dots stay at least ${AUTO_MODULE_FLOOR_MM.toFixed(2)}mm — the size a phone camera finds without a perfect shot.`,
-    },
-    ...TIERS,
-  ];
+  interface Tile {
+    tier: Tier;
+    el: HTMLElement;
+    stats: HTMLElement;
+    note: HTMLElement;
+    previewBtn: HTMLButtonElement;
+    trimBtn: HTMLButtonElement;
+    status: HTMLElement;
+  }
+
   const tiersEl = $('tiers');
-  for (const tile of tiles) {
-    const el = document.createElement('button');
+  const tiles = new Map<Tier['key'], Tile>();
+  for (const tier of TIERS) {
+    // A plain <div>: the tile carries its own buttons, and a button inside a
+    // button is neither valid HTML nor parseable the way it reads.
+    const el = document.createElement('div');
     el.className = 'tier';
-    el.dataset.key = tile.key;
+    el.dataset.key = tier.key;
+    el.setAttribute('role', 'button');
+    el.tabIndex = 0;
     el.innerHTML = `
-      <div class="name">${tile.label}</div>
-      <div class="blurb">${tile.blurb}</div>
+      <div class="name">${tier.label}</div>
+      <div class="blurb">${tier.blurb}</div>
       <div class="stats" data-stats>—</div>
+      <div class="tier-note" data-note></div>
+      <div class="preview-row">
+        <button class="small" data-preview disabled>▶ Preview</button>
+        <button class="small" data-trim style="display:none">Trim</button>
+        <span class="hint" data-status></span>
+      </div>
     `;
-    if (tile.key === 'best' && !lyraOk) {
-      el.disabled = true;
+    const tile: Tile = {
+      tier,
+      el,
+      stats: el.querySelector<HTMLElement>('[data-stats]')!,
+      note: el.querySelector<HTMLElement>('[data-note]')!,
+      previewBtn: el.querySelector<HTMLButtonElement>('[data-preview]')!,
+      trimBtn: el.querySelector<HTMLButtonElement>('[data-trim]')!,
+      status: el.querySelector<HTMLElement>('[data-status]')!,
+    };
+    if (tier.codec === 'lyra' && !lyraOk) {
+      el.setAttribute('aria-disabled', 'true');
       el.title = 'This browser cannot run the Lyra codec.';
     }
-    el.addEventListener('click', () => {
-      state.tierKey = tile.key;
-      renderTierSelection();
+    const choose = (): void => {
+      if (el.classList.contains('unavailable')) return; // trim it first
+      state.tierKey = tier.key;
+      renderTiers();
       scheduleUpdate();
+    };
+    el.addEventListener('click', choose);
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        choose();
+      }
+    });
+    tile.previewBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void startPreview(tier);
+    });
+    tile.trimBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      trimToFit(tier);
     });
     tiersEl.appendChild(el);
+    tiles.set(tier.key, tile);
   }
-  function renderTierSelection(): void {
-    tiersEl.querySelectorAll<HTMLElement>('.tier').forEach((el) => {
-      el.classList.toggle('selected', el.dataset.key === state.tierKey);
-    });
-  }
-  renderTierSelection();
 
   // The single card spec used for tier decisions, tier stats, AND the real
   // plan — if these diverged (e.g. one forgot that a textured back lays the
-  // codes out differently), the auto tier could approve a card the final plan
-  // renders below the scannability floor.
+  // codes out differently), a tier could be offered whose final plan renders
+  // below the scannability floor.
   function cardSpec(): CardSpec {
     return { inverted: state.inverted, textured: state.textured };
   }
 
-  /** The concrete tier the current selection encodes with. */
-  function resolveTier(seconds: number): Tier {
-    if (state.tierKey === 'auto') return pickAutoTier(seconds, cardSpec(), lyraOk);
+  function preferredTier(): Tier {
     return TIERS.find((t) => t.key === state.tierKey)!;
   }
 
-  function updateTierStats(): void {
-    const seconds = state.pcm ? state.trim.endSec - state.trim.startSec : MAX_SECONDS;
-    tiersEl.querySelectorAll<HTMLElement>('.tier').forEach((el) => {
-      const statsEl = el.querySelector('[data-stats]')!;
-      if (el.dataset.key === 'auto') {
-        try {
-          statsEl.textContent = `→ ${resolveTier(seconds).label.toLowerCase()} for this clip`;
-        } catch {
-          statsEl.textContent = 'does not fit';
-        }
-        return;
-      }
-      const tier = TIERS.find((t) => t.key === el.dataset.key)!;
-      if (tier.codec === 'lyra' && !lyraOk) {
-        statsEl.textContent = 'not available in this browser';
-        return;
-      }
-      try {
-        const plan = planCard(estimatePayloadBytes(seconds, tier), cardSpec());
-        statsEl.textContent = `${plan.chunkCount} codes · ${plan.moduleMm.toFixed(2)}mm dots`;
-      } catch {
-        statsEl.textContent = 'does not fit';
-      }
-    });
+  /** The tier the card is actually built with: the preference when this clip
+   * fits it, the best fitting rung otherwise. */
+  function effectiveTier(seconds: number): Tier {
+    const pref = preferredTier();
+    const usable = pref.codec !== 'lyra' || lyraOk;
+    if (usable && tierFits(seconds, pref, cardSpec())) return pref;
+    return bestTierThatFits(seconds, cardSpec(), lyraOk);
   }
-  updateTierStats();
+
+  /** Shrink the trim window to the longest clip this tier can hold, and adopt
+   * the tier — the button exists precisely to unlock it. */
+  function trimToFit(tier: Tier): void {
+    if (!state.pcm || !trimHandle) return;
+    const maxSec = maxSecondsForTier(tier, cardSpec());
+    if (maxSec <= 0) return;
+    const duration = state.pcm.length / PCM_SAMPLE_RATE;
+    state.tierKey = tier.key;
+    trimHandle.set(state.trim.startSec, Math.min(state.trim.startSec + maxSec, duration));
+    updateTrimHint();
+    renderTiers();
+    scheduleUpdate();
+  }
+
+  function renderTiers(): void {
+    const spec = cardSpec();
+    const seconds = state.pcm ? state.trim.endSec - state.trim.startSec : null;
+    let effective: Tier | null = null;
+    if (seconds !== null) {
+      try {
+        effective = effectiveTier(seconds);
+      } catch {
+        effective = null; // nothing fits — the error surfaces from update()
+      }
+    }
+    const pref = preferredTier();
+    const prefUsable = pref.codec !== 'lyra' || lyraOk;
+
+    for (const tile of tiles.values()) {
+      const { tier } = tile;
+      const usable = tier.codec !== 'lyra' || lyraOk;
+      const maxSec = usable ? maxSecondsForTier(tier, spec) : 0;
+      const fits = usable && (seconds === null || tierFits(seconds, tier, spec));
+      const selected = effective !== null && effective.key === tier.key;
+      tile.el.classList.toggle('unavailable', !fits);
+      tile.el.classList.toggle('selected', selected);
+
+      if (!usable) {
+        tile.stats.textContent = 'not available in this browser';
+      } else if (seconds === null) {
+        tile.stats.textContent = `fits up to ${maxSec.toFixed(1)}s`;
+      } else if (fits) {
+        const plan = planCard(estimatePayloadBytes(seconds, tier), spec);
+        tile.stats.textContent =
+          `${plan.chunkCount} codes · ${plan.moduleMm.toFixed(2)}mm dots · fits up to ${maxSec.toFixed(1)}s`;
+      } else {
+        tile.stats.textContent = `needs ≤ ${maxSec.toFixed(1)}s — this clip is ${seconds.toFixed(1)}s`;
+      }
+
+      // Explain a silently-downgraded selection on the tile doing the work.
+      const overridden = selected && pref.key !== tier.key;
+      tile.note.textContent = !overridden
+        ? ''
+        : prefUsable
+          ? `${pref.label} needs ≤ ${maxSecondsForTier(pref, spec).toFixed(1)}s — using ${tier.label} for this clip.`
+          : `${pref.label} isn't available in this browser — using ${tier.label}.`;
+
+      const canTrim = !fits && usable && seconds !== null && maxSec > 0;
+      tile.trimBtn.style.display = canTrim ? '' : 'none';
+      if (canTrim) tile.trimBtn.textContent = `Trim to ${maxSec.toFixed(1)}s`;
+
+      const playing = previewPlaying?.key === tier.key;
+      tile.previewBtn.disabled =
+        !playing && (!state.pcm || !fits || previewBusyKey !== null);
+    }
+  }
+  renderTiers();
+
+  // --- tier preview: encode → decode → restore → play, exactly as a scan does ---
+
+  function stopPreview(): void {
+    previewSeq++;
+    previewBusyKey = null;
+    const current = previewPlaying;
+    previewPlaying = null;
+    if (!current) return;
+    current.playback.stop();
+    const tile = tiles.get(current.key);
+    if (tile) tile.previewBtn.textContent = '▶ Preview';
+  }
+
+  async function startPreview(tier: Tier): Promise<void> {
+    const tile = tiles.get(tier.key);
+    if (!tile || !state.pcm) return;
+    if (previewPlaying?.key === tier.key) {
+      stopPreview();
+      tile.status.textContent = '';
+      renderTiers();
+      return;
+    }
+    // One sound at a time: a second preview (or the original) would just be
+    // noise over the first.
+    stopPreview();
+    playback?.stop();
+    playback = null;
+    const seq = ++previewSeq;
+    previewBusyKey = tier.key;
+    renderTiers();
+    const setStatus = (msg: string): void => {
+      if (seq === previewSeq) tile.status.textContent = msg;
+    };
+    try {
+      const key = cacheKey(tier);
+      const cached = encodeCache.get(key);
+      let restored = cached?.restored;
+      if (!restored) {
+        if (cached?.bytes) {
+          // The card pipeline already paid for this encode; only the playback
+          // side is missing.
+          restored = await decodeForPlayback(tier.wireVersion, tier.modeId, cached.bytes, setStatus);
+          rememberEncode(key, { bytes: cached.bytes, restored });
+        } else {
+          const slice = slicePcm(state.pcm, state.trim.startSec, state.trim.endSec);
+          const result = await previewForTier(tier, slice, setStatus);
+          restored = {
+            pcm: result.pcm,
+            sampleRate: result.sampleRate,
+            restoration: result.restoration,
+          };
+          rememberEncode(key, { bytes: result.bytes, restored });
+        }
+      }
+      if (seq !== previewSeq) return;
+      const audio = restored;
+      tile.previewBtn.textContent = '■ Stop';
+      setStatus(audio.restoration === 'dsp' ? `Playing… — ${DSP_NOTE}` : 'Playing…');
+      const pb = playPcm(audio.pcm, audio.sampleRate);
+      previewPlaying = { key: tier.key, playback: pb };
+      void pb.done.then(() => {
+        if (previewPlaying?.playback !== pb) return;
+        previewPlaying = null;
+        tile.previewBtn.textContent = '▶ Preview';
+        setStatus(audio.restoration === 'dsp' ? DSP_NOTE : '');
+        renderTiers();
+      });
+    } catch {
+      setStatus('Preview failed on this device.');
+    } finally {
+      if (previewBusyKey === tier.key) previewBusyKey = null;
+      renderTiers();
+      updateStatsLine();
+    }
+  }
+
+  $('hear-card').addEventListener('click', () => {
+    if (!state.tier) return;
+    void startPreview(state.tier);
+  });
 
   // --- options ---
 
@@ -389,7 +608,7 @@ export function mountGenerator(root: HTMLElement): void {
   function scheduleUpdate(): void {
     clearTimeout(debounceTimer);
     debounceTimer = window.setTimeout(() => void update(), 300);
-    updateTierStats();
+    renderTiers();
   }
 
   async function update(): Promise<void> {
@@ -398,23 +617,18 @@ export function mountGenerator(root: HTMLElement): void {
     setError(null);
     try {
       const seconds = state.trim.endSec - state.trim.startSec;
-      const tier = resolveTier(seconds);
+      const tier = effectiveTier(seconds);
       // Encoding depends only on the clip, trim window, and tier — reuse the
       // last result when only card options (text line, invert) changed, so
       // typing a caption doesn't re-run neural-codec inference per keystroke.
-      const encodeKey = `${tier.key}|${pcmEpoch}|${state.trim.startSec}|${state.trim.endSec}`;
-      let encoded: Uint8Array;
-      if (encodeCache && encodeCache.key === encodeKey) {
-        encoded = encodeCache.bytes;
-      } else {
+      const key = cacheKey(tier);
+      let encoded = encodeCache.get(key)?.bytes;
+      if (!encoded) {
         const pcm = slicePcm(state.pcm, state.trim.startSec, state.trim.endSec);
-        encoded =
-          tier.codec === 'lyra'
-            ? await lyraEncode(pcm)
-            : await codec2Encode(tier.mode, decimate2(pcm));
-        encodeCache = { key: encodeKey, bytes: encoded };
+        encoded = await encodeForTier(tier, pcm);
+        if (seq !== encodeSeq) return; // superseded
+        rememberEncode(key, { bytes: encoded });
       }
-      if (seq !== encodeSeq) return; // superseded
       const plan = planCard(encoded.length, cardSpec());
       const chunks = splitPayload(
         encoded,
@@ -431,6 +645,7 @@ export function mountGenerator(root: HTMLElement): void {
         // Seeded by card id so the preview, PNG, and SVG are the same field.
         texture: state.textured ? { seed: state.cardId } : undefined,
       };
+      state.tier = tier;
       state.encoded = encoded;
       state.plan = plan;
       state.renderInput = renderInput;
@@ -446,7 +661,7 @@ export function mountGenerator(root: HTMLElement): void {
         recordedAt: state.recordedAt || undefined,
         durationSec: seconds,
       };
-      renderPreview(tier);
+      renderPreview();
     } catch (e) {
       if (seq === encodeSeq) {
         setError(e instanceof Error ? e.message : 'Something went wrong while building the card.');
@@ -454,7 +669,7 @@ export function mountGenerator(root: HTMLElement): void {
     }
   }
 
-  function renderPreview(tier: Tier): void {
+  function renderPreview(): void {
     const { plan, renderInput } = state;
     if (!plan || !renderInput) return;
     $('card-wrap').style.display = 'block';
@@ -472,38 +687,41 @@ export function mountGenerator(root: HTMLElement): void {
       drawFront(front.getContext('2d')!, state.frontInput, previewPxPerMm * 2);
     }
 
-    const seconds = state.trim.endSec - state.trim.startSec;
-    const codecLabel = tier.codec === 'lyra' ? 'Lyra 3.2 kbps' : `Codec 2 ${tier.mode}`;
-    const field = cardTexture(renderInput);
-    $('stats-line').textContent =
-      `${seconds.toFixed(1)}s audio · ${codecLabel} · ${state.encoded!.length} bytes · ` +
-      `${plan.chunkCount} data codes (QR v${plan.qrVersion}) + 1 entry code · ` +
-      `${plan.moduleMm.toFixed(2)}mm modules · ${plan.grid.cols}×${plan.grid.rows} grid` +
-      (field ? ` · +${(field.coverage * 100).toFixed(0)}% engraved area (texture)` : '');
+    updateStatsLine();
 
     const w = $('warnings');
     w.innerHTML = '';
-    const msgs: string[] = [];
-    if (plan.warnings.includes('module-below-0.25')) {
-      msgs.push(
-        '⚠ Modules are below 0.25mm — many engravers and phone cameras will struggle. Consider a lower quality tier or shorter audio.',
-      );
-    } else if (plan.warnings.includes('module-below-0.30')) {
-      msgs.push(
-        '⚠ Modules are below 0.30mm — scanning still works but needs a clean engraving and a decent camera.',
-      );
-    }
+    // No module-size warnings to render: a tier below the floor is never
+    // offered, so the only thing left to say is when the field ran out of room.
     if (plan.warnings.includes('texture-cramped')) {
-      msgs.push(
-        'ℹ This clip fills the card, so the pixel field only reaches the margins — the codes keep their full quiet zones. A shorter clip or a lower quality tier lets the field run between them.',
-      );
-    }
-    for (const m of msgs) {
       const div = document.createElement('div');
       div.className = 'warning';
-      div.textContent = m;
+      div.textContent =
+        'ℹ This clip fills the card, so the pixel field only reaches the margins — the codes keep their full quiet zones. A shorter clip or a lower quality tier lets the field run between them.';
       w.appendChild(div);
     }
+  }
+
+  function updateStatsLine(): void {
+    const { plan, renderInput, tier, encoded } = state;
+    if (!plan || !renderInput || !tier || !encoded) return;
+    const seconds = state.trim.endSec - state.trim.startSec;
+    const codecLabel = tier.codec === 'lyra' ? 'Lyra 3.2 kbps' : `Codec 2 ${tier.mode}`;
+    // Once the maker has previewed this exact card we know which restoration
+    // their device managed — worth saying, since it is what a scanner hears.
+    const restoration = encodeCache.get(cacheKey(tier))?.restored?.restoration;
+    const restoreLabel =
+      restoration === 'neural'
+        ? ' (neural restoration)'
+        : restoration === 'dsp'
+          ? ' (standard restoration)'
+          : '';
+    const field = cardTexture(renderInput);
+    $('stats-line').textContent =
+      `${seconds.toFixed(1)}s audio · ${codecLabel}${restoreLabel} · ${encoded.length} bytes · ` +
+      `${plan.chunkCount} data codes (QR v${plan.qrVersion}) + 1 entry code · ` +
+      `${plan.moduleMm.toFixed(2)}mm modules · ${plan.grid.cols}×${plan.grid.rows} grid` +
+      (field ? ` · +${(field.coverage * 100).toFixed(0)}% engraved area (texture)` : '');
   }
 
   // --- downloads ---

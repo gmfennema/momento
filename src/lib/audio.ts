@@ -6,7 +6,10 @@
 
 export const PCM_SAMPLE_RATE = 16000;
 
-export const MAX_SECONDS = 10;
+// The clip-length cap lives with the planner (lib/layout.ts) so node tests can
+// use it without importing this browser-only module; re-exported here because
+// the UI thinks of it as an audio limit.
+export { MAX_SECONDS } from './layout';
 
 /** Decode any audio blob/file and resample to 16 kHz mono float PCM. */
 export async function fileToFloat32(file: Blob): Promise<Float32Array> {

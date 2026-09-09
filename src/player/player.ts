@@ -3,11 +3,16 @@
 // States: IDLE → SCANNING | PHOTOS → DECODING → READY → PLAYING (+ CAMERA_DENIED).
 
 import { playPcm, type Playback } from '../lib/audio';
-import { enhanceNeuralNarrowband, neuralBweSupported, warmUpNeuralBwe } from '../lib/bwe';
-import { codec2Decode, CODEC2_SAMPLE_RATE } from '../lib/codec2';
-import { enhanceNarrowband } from '../lib/enhance';
-import { lyraDecode, lyraSupported, warmUpLyra, LYRA_SAMPLE_RATE } from '../lib/lyra';
-import { ChunkCollector, LYRA_MODE_3200, MODE_BY_ID, WIRE_CODEC2, WIRE_LYRA } from '../lib/chunk';
+import { warmUpNeuralBwe } from '../lib/bwe';
+import { CODEC2_SAMPLE_RATE } from '../lib/codec2';
+import { warmUpLyra } from '../lib/lyra';
+import {
+  decodeForPlayback,
+  LyraUnavailableError,
+  UnknownLyraModeError,
+  type Restoration,
+} from '../lib/restore';
+import { ChunkCollector, WIRE_CODEC2, WIRE_LYRA } from '../lib/chunk';
 import { brandHeader } from '../lib/brand';
 import { scanPhoto, startScanner, type ScannerHandle } from './scanner';
 
@@ -26,6 +31,7 @@ export function mountPlayer(root: HTMLElement): void {
   let playback: Playback | null = null;
   let pcm: Int16Array | null = null;
   let pcmRate = CODEC2_SAMPLE_RATE;
+  let restoration: Restoration = 'lyra';
 
   function makePhotoInput(onFiles: (files: File[]) => void): HTMLInputElement {
     const input = document.createElement('input');
@@ -214,64 +220,36 @@ export function mountPlayer(root: HTMLElement): void {
     stage.querySelector('#upload')!.addEventListener('click', () => input.click());
   }
 
-  /** Codec 2 decodes get enhanced before playback: the neural
-   * bandwidth-extension model when it can load, the lightweight EQ+exciter
-   * render otherwise. Either way replays cost nothing extra. */
-  async function enhanceCodec2(decoded: Int16Array, note: HTMLElement): Promise<void> {
-    if (neuralBweSupported()) {
-      try {
-        const enhanced = await enhanceNeuralNarrowband(
-          decoded,
-          CODEC2_SAMPLE_RATE,
-          (loaded, total) => {
-            note.textContent =
-              loaded < total
-                ? `Restoring the voice — fetching the model (${(loaded / 1048576).toFixed(1)} of ${Math.round(total / 1048576)} MB, one-time)…`
-                : 'Restoring the voice with the neural model…';
-          },
-        );
-        pcm = enhanced.pcm;
-        pcmRate = enhanced.sampleRate;
-        return;
-      } catch {
-        // No network for the model, or the wasm failed — fall through to the
-        // always-available DSP polish.
-      }
-    }
-    const enhanced = await enhanceNarrowband(decoded, CODEC2_SAMPLE_RATE);
-    pcm = enhanced.pcm;
-    pcmRate = enhanced.sampleRate;
-  }
-
   async function showDecoding(collector: ChunkCollector): Promise<void> {
     scanner = null;
     stage.innerHTML = `<p class="hint">Rebuilding the audio from the card…</p>`;
+    const note = stage.querySelector<HTMLElement>('.hint')!;
     try {
       const { version, modeId, data } = collector.assemble();
-      if (version === WIRE_LYRA) {
-        if (modeId !== LYRA_MODE_3200) {
-          // A reserved Lyra mode from a future generator — decoding it as
-          // 3.2 kbps would play garbage, so be honest instead.
-          stage.innerHTML = `<div class="error">This card was made with a newer version of Momento — refresh this page and try again.</div>`;
-          setTimeout(showIdle, 4000);
-          return;
-        }
-        if (!lyraSupported()) {
-          // Most likely the first-ever visit before the isolation service
-          // worker kicked in — a reload fixes that; a truly old browser won't.
-          stage.innerHTML = `<div class="error">This card's audio needs one more page reload to unlock — reload and scan again. If it keeps happening, update your browser.</div>`;
-          setTimeout(showIdle, 5000);
-          return;
-        }
-        pcm = await lyraDecode(data);
-        pcmRate = LYRA_SAMPLE_RATE;
-      } else {
-        const decoded = await codec2Decode(MODE_BY_ID[modeId]!, data);
-        const note = stage.querySelector<HTMLElement>('.hint')!;
-        await enhanceCodec2(decoded, note);
-      }
+      // Same pipeline the generator previews with, watchdog included: a Codec 2
+      // card always gets a restoration, neural when it can finish, DSP when not.
+      const restored = await decodeForPlayback(version, modeId, data, (msg) => {
+        note.textContent = msg;
+      });
+      pcm = restored.pcm;
+      pcmRate = restored.sampleRate;
+      restoration = restored.restoration;
       showReady();
-    } catch {
+    } catch (e) {
+      if (e instanceof UnknownLyraModeError) {
+        // A reserved Lyra mode from a future generator — decoding it as
+        // 3.2 kbps would play garbage, so be honest instead.
+        stage.innerHTML = `<div class="error">This card was made with a newer version of Momento — refresh this page and try again.</div>`;
+        setTimeout(showIdle, 4000);
+        return;
+      }
+      if (e instanceof LyraUnavailableError) {
+        // Most likely the first-ever visit before the isolation service
+        // worker kicked in — a reload fixes that; a truly old browser won't.
+        stage.innerHTML = `<div class="error">This card's audio needs one more page reload to unlock — reload and scan again. If it keeps happening, update your browser.</div>`;
+        setTimeout(showIdle, 5000);
+        return;
+      }
       stage.innerHTML = `<div class="error">Couldn't rebuild the audio — please rescan the card.</div>`;
       setTimeout(showIdle, 2500);
     }
@@ -279,9 +257,16 @@ export function mountPlayer(root: HTMLElement): void {
 
   function showReady(): void {
     const seconds = pcm ? (pcm.length / pcmRate).toFixed(1) : '?';
+    // Say when the voice came back the plain way, so a listener comparing two
+    // phones isn't left wondering why one sounds duller.
+    const fallbackNote =
+      restoration === 'dsp'
+        ? `<p class="hint">Neural restoration wasn't available on this device, so this is the standard restoration.</p>`
+        : '';
     stage.innerHTML = `
       <button class="big-play" id="play">▶</button>
       <p class="hint">${seconds}s of audio, rebuilt entirely from the card.</p>
+      ${fallbackNote}
       <button id="again">Scan another card</button>
     `;
     const playBtn = stage.querySelector<HTMLButtonElement>('#play')!;

@@ -3,12 +3,14 @@ import { base45Length } from '../src/lib/base45';
 import { HEADER_BYTES } from '../src/lib/chunk';
 import {
   alnumCapacityL,
-  AUTO_MODULE_FLOOR_MM,
+  bestTierThatFits,
   CARD_H_MM,
   CARD_W_MM,
   estimatePayloadBytes,
+  MAX_SECONDS,
   maxChunkBytesForVersion,
-  pickAutoTier,
+  maxSecondsForTier,
+  MODULE_FLOOR_MM,
   planCard,
   TIERS,
 } from '../src/lib/layout';
@@ -37,7 +39,7 @@ describe('planCard', () => {
     });
   }
 
-  it('balanced tier at 10s stays at or above the 0.30mm scannability floor', () => {
+  it('the basic tier at 10s stays at or above the 0.30mm scannability floor', () => {
     const plan = planCard(2000, { inverted: false });
     expect(plan.moduleMm).toBeGreaterThanOrEqual(0.3);
     expect(plan.warnings).not.toContain('module-below-0.30');
@@ -53,57 +55,80 @@ describe('planCard', () => {
     }
   });
 
-  it('auto tier picks Lyra for a short clip, backs off for a long one', () => {
-    // A 4s clip at Lyra's 400 B/s is 1.6 KB — still above the floor.
-    const short = pickAutoTier(4, { inverted: false }, true);
-    expect(short.codec).toBe('lyra');
-
-    // At 10s Lyra means 4 KB; auto must back off to a Codec 2 rung.
-    const long = pickAutoTier(10, { inverted: false }, true);
-    expect(long.codec).toBe('codec2');
-
-    // Whatever it picks, at every length, must clear the floor…
-    for (const seconds of [1, 3, 4, 5, 6, 8, 10]) {
-      const picked = pickAutoTier(seconds, { inverted: false }, true);
-      const plan = planCard(estimatePayloadBytes(seconds, picked), { inverted: false });
-      expect(plan.moduleMm).toBeGreaterThanOrEqual(AUTO_MODULE_FLOOR_MM);
-      // …and nothing better may also clear it.
-      for (const other of TIERS) {
-        if (other.bytesPerSec <= picked.bytesPerSec) continue;
-        const alt = planCard(estimatePayloadBytes(seconds, other), { inverted: false });
-        expect(alt.moduleMm).toBeLessThan(AUTO_MODULE_FLOOR_MM);
+  it('reports the longest clip each tier can hold', () => {
+    const expected: Record<string, number> = { best: 4.4, good: 5.9, basic: 10 };
+    for (const textured of [false, true]) {
+      const spec = { inverted: false, textured };
+      for (const tier of TIERS) {
+        expect(maxSecondsForTier(tier, spec)).toBeCloseTo(expected[tier.key]!, 6);
       }
     }
   });
 
-  it('auto never hands back a card the UI would warn about', () => {
+  it('the reported maximum is exactly where the floor is crossed', () => {
+    for (const textured of [false, true]) {
+      const spec = { inverted: false, textured };
+      for (const tier of TIERS) {
+        const max = maxSecondsForTier(tier, spec);
+        expect(planCard(estimatePayloadBytes(max, tier), spec).moduleMm).toBeGreaterThanOrEqual(
+          MODULE_FLOOR_MM,
+        );
+        if (max < MAX_SECONDS) {
+          const over = Math.round((max + 0.1) * 10) / 10;
+          let moduleMm = 0;
+          try {
+            moduleMm = planCard(estimatePayloadBytes(over, tier), spec).moduleMm;
+          } catch {
+            moduleMm = 0; // doesn't fit at all, which is well under the floor
+          }
+          expect(moduleMm).toBeLessThan(MODULE_FLOOR_MM);
+        }
+      }
+    }
+  });
+
+  it('picks the best tier a clip can actually have', () => {
+    const spec = { inverted: false };
+    expect(bestTierThatFits(4, spec, true).codec).toBe('lyra');
+    expect(bestTierThatFits(5, spec, true).key).toBe('good');
+    expect(bestTierThatFits(7, spec, true).key).toBe('basic');
+    expect(bestTierThatFits(10, spec, true).key).toBe('basic');
+  });
+
+  it('never picks Lyra when the browser cannot run it', () => {
+    for (const seconds of [1, 3, 5, 10]) {
+      expect(bestTierThatFits(seconds, { inverted: false }, false).codec).toBe('codec2');
+    }
+  });
+
+  it('never hands back a card the UI would warn about', () => {
     for (const textured of [false, true]) {
       for (let tenths = 5; tenths <= 100; tenths++) {
         const seconds = tenths / 10;
         const spec = { inverted: false, textured };
-        const tier = pickAutoTier(seconds, spec, true);
+        const tier = bestTierThatFits(seconds, spec, true);
         const plan = planCard(estimatePayloadBytes(seconds, tier), spec);
         expect(plan.warnings).not.toContain('module-below-0.30');
         expect(plan.warnings).not.toContain('module-below-0.25');
-        expect(plan.moduleMm).toBeGreaterThanOrEqual(AUTO_MODULE_FLOOR_MM);
+        expect(plan.moduleMm).toBeGreaterThanOrEqual(MODULE_FLOOR_MM);
+        // …and nothing better may also clear it.
+        for (const other of TIERS) {
+          if (other.bytesPerSec <= tier.bytesPerSec) continue;
+          const alt = planCard(estimatePayloadBytes(seconds, other), spec);
+          expect(alt.moduleMm).toBeLessThan(MODULE_FLOOR_MM);
+        }
       }
     }
   });
 
-  it('auto tier without Lyra support never picks it', () => {
-    for (const seconds of [1, 5, 10]) {
-      expect(pickAutoTier(seconds, { inverted: false }, false).codec).toBe('codec2');
-    }
-  });
-
-  it('textured backs buy gutter space out of surplus module size, never below the auto floor', () => {
+  it('textured backs buy gutter space out of surplus module size, never below the floor', () => {
     for (const bytes of [400, 1000, 2000, 4000]) {
       const plain = planCard(bytes, { inverted: false });
       const textured = planCard(bytes, { inverted: false, textured: true });
       // Wide gutters are cosmetic: they may never drag modules under the
       // scannability floor, and never below what the plain card manages.
       if (textured.gutterModules > 3) {
-        expect(textured.moduleMm).toBeGreaterThanOrEqual(AUTO_MODULE_FLOOR_MM);
+        expect(textured.moduleMm).toBeGreaterThanOrEqual(MODULE_FLOOR_MM);
         expect(textured.warnings).not.toContain('texture-cramped');
       } else {
         expect(textured.warnings).toContain('texture-cramped');
