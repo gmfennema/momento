@@ -16,15 +16,23 @@
 import { codec2Decode, CODEC2_SAMPLE_RATE, codec2Encode } from './codec2';
 import { enhanceNeuralNarrowband, neuralBweSupported, resetNeuralBwe } from './bwe';
 import { enhanceNarrowband, type EnhancedPcm } from './enhance';
-import { lyraDecode, lyraEncode, lyraSupported, LYRA_SAMPLE_RATE } from './lyra';
-import { LYRA_MODE_3200, MODE_BY_ID, WIRE_LYRA, type CodecModeId } from './chunk';
+import { lyraDecode, lyraSupported, LYRA_SAMPLE_RATE } from './lyra';
+import { mimiDecode, mimiEncode, MIMI_SAMPLE_RATE } from './mimi';
+import {
+  LYRA_MODE_3200,
+  mimiDepth,
+  MODE_BY_ID,
+  WIRE_LYRA,
+  WIRE_MIMI,
+  type CodecModeId,
+} from './chunk';
 import { decimate2 } from './resample';
 import type { Tier } from './layout';
 
-/** How the highs in the played audio got there. 'lyra' — the codec carried
- * them; 'neural' — the restoration model resynthesized them; 'dsp' — the
+/** How the highs in the played audio got there. 'lyra' / 'mimi' — the codec
+ * carried them; 'neural' — the restoration model resynthesized them; 'dsp' — the
  * lightweight EQ + exciter fallback. */
-export type Restoration = 'lyra' | 'neural' | 'dsp';
+export type Restoration = 'lyra' | 'mimi' | 'neural' | 'dsp';
 
 export interface RestoredAudio {
   pcm: Int16Array;
@@ -143,6 +151,18 @@ export async function decodeForPlayback(
   data: Uint8Array,
   onStatus?: RestoreStatus,
 ): Promise<RestoredAudio> {
+  if (version === WIRE_MIMI) {
+    // Wideband (24 kHz) by construction — nothing to restore.
+    onStatus?.('Rebuilding the voice…');
+    const pcm = await mimiDecode(data, mimiDepth(modeId), (loaded, total) => {
+      onStatus?.(
+        loaded < total
+          ? `Rebuilding the voice — fetching the model (${(loaded / 1048576).toFixed(1)} of ${Math.round(total / 1048576)} MB, one-time)…`
+          : 'Rebuilding the voice…',
+      );
+    });
+    return { pcm, sampleRate: MIMI_SAMPLE_RATE, restoration: 'mimi' };
+  }
   if (version === WIRE_LYRA) {
     if (modeId !== LYRA_MODE_3200) throw new UnknownLyraModeError(`lyra mode ${modeId}`);
     if (!lyraSupported()) throw new LyraUnavailableError('lyra needs cross-origin isolation');
@@ -154,11 +174,18 @@ export async function decodeForPlayback(
   return restoreCodec2(decoded, CODEC2_SAMPLE_RATE, decoded.length / CODEC2_SAMPLE_RATE, onStatus);
 }
 
-/** Generator side of the same contract: 16 kHz pipeline PCM → card bytes. */
-export async function encodeForTier(tier: Tier, pcm16k: Int16Array): Promise<Uint8Array> {
-  return tier.codec === 'lyra'
-    ? lyraEncode(pcm16k)
+/** Generator side of the same contract: 16 kHz pipeline PCM → card bytes.
+ * `depth` is the Mimi code stack the card has room for (layout.mimiDepthFor);
+ * Codec 2 ignores it. */
+export async function encodeForTier(tier: Tier, pcm16k: Int16Array, depth: number): Promise<Uint8Array> {
+  return tier.codec === 'mimi'
+    ? mimiEncode(pcm16k, depth)
     : codec2Encode(tier.mode, decimate2(pcm16k));
+}
+
+/** The wire mode id a card written by `encodeForTier` carries. */
+export function modeIdForTier(tier: Tier, depth: number): CodecModeId {
+  return tier.codec === 'mimi' ? depth - 1 : tier.modeId;
 }
 
 /** Encode a clip for a tier and immediately play it back through the player's
@@ -167,10 +194,11 @@ export async function encodeForTier(tier: Tier, pcm16k: Int16Array): Promise<Uin
 export async function previewForTier(
   tier: Tier,
   pcm16k: Int16Array,
+  depth: number,
   onStatus?: RestoreStatus,
 ): Promise<RestoredAudio & { bytes: Uint8Array }> {
-  onStatus?.('Encoding…');
-  const bytes = await encodeForTier(tier, pcm16k);
-  const restored = await decodeForPlayback(tier.wireVersion, tier.modeId, bytes, onStatus);
+  onStatus?.(tier.codec === 'mimi' ? 'Encoding (first time: fetching the voice model)…' : 'Encoding…');
+  const bytes = await encodeForTier(tier, pcm16k, depth);
+  const restored = await decodeForPlayback(tier.wireVersion, modeIdForTier(tier, depth), bytes, onStatus);
   return { ...restored, bytes };
 }

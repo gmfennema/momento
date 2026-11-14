@@ -25,7 +25,7 @@ function wavFixture(seconds = 3): Buffer {
   return data;
 }
 
-test('page is cross-origin isolated so the Lyra codec can run', async ({ page }) => {
+test('page is cross-origin isolated so threaded wasm (Lyra playback, ort) can run', async ({ page }) => {
   await page.goto('/momento/');
   expect(await page.evaluate(() => crossOriginIsolated)).toBe(true);
 });
@@ -47,15 +47,14 @@ test('generator: upload → stats → card preview → downloads enabled', async
   await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 20_000 });
   await expect(page.locator('#stats-line')).toContainText('data codes');
   await expect(page.locator('#stats-line')).toContainText('mm modules');
-  // The default Best preference fits this short clip, so it lands on Lyra…
-  await expect(page.locator('#stats-line')).toContainText('Lyra 3.2 kbps');
-  // …and the Codec 2 rungs are still selectable by hand.
+  // The default Best preference lands on Mimi, at the deepest code stack the
+  // card holds for a clip this short…
+  await expect(page.locator('#stats-line')).toContainText('(20 codes/frame)', { timeout: 30_000 });
+  // …and the Codec 2 rung is still selectable by hand.
   await page.click('.tier[data-key="basic"]');
   await expect(page.locator('#stats-line')).toContainText('Codec 2 1400', { timeout: 10_000 });
-  await page.click('.tier[data-key="good"]');
-  await expect(page.locator('#stats-line')).toContainText('Codec 2 2400', { timeout: 10_000 });
   await page.click('.tier[data-key="best"]');
-  await expect(page.locator('#stats-line')).toContainText('Lyra 3.2 kbps', { timeout: 10_000 });
+  await expect(page.locator('#stats-line')).toContainText('Mimi', { timeout: 10_000 });
 
   // Preview canvases (front + back) actually have card pixels.
   for (const id of ['#card-preview', '#front-preview']) {
@@ -165,7 +164,8 @@ test('player: scan screen shows guidance when camera is unavailable', async ({ p
   await expect(page.locator('#upload')).toBeVisible();
 });
 
-test('player: photo of a Lyra card → neural decode → ready to play', async ({ page }) => {
+test('player: photo of a Mimi card → neural decode → ready to play', async ({ page }) => {
+  test.setTimeout(120_000);
   // Generate a card (the default Best tier fits this clip) and capture its
   // preview as a PNG "photo" — this exercises the full neural codec round
   // trip: encode → QR card → scan → decode.
@@ -175,8 +175,8 @@ test('player: photo of a Lyra card → neural decode → ready to play', async (
     mimeType: 'audio/wav',
     buffer: wavFixture(),
   });
-  await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 20_000 });
-  await expect(page.locator('#stats-line')).toContainText('Lyra 3.2 kbps');
+  await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('#stats-line')).toContainText('Mimi');
   const dataUrl = await page
     .locator('#card-preview')
     .evaluate((c: HTMLCanvasElement) => c.toDataURL('image/png'));
@@ -232,32 +232,30 @@ test('generator: previewing a tier plays the card through the player pipeline', 
   });
   await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 20_000 });
 
-  // Codec 2 preview = encode → decode → neural restoration (27 MB model) →
-  // play. Slow on a cold cache, hence the generous window.
-  const tile = page.locator('.tier[data-key="good"]');
+  // Mimi preview = encode → decode (≈130 MB of models on a cold cache) →
+  // play, hence the generous window.
+  const tile = page.locator('.tier[data-key="best"]');
   await tile.locator('[data-preview]').click();
   await expect(tile.locator('[data-preview]')).toHaveText('■ Stop', { timeout: 40_000 });
   await expect(tile.locator('[data-status]')).toContainText('Playing');
 });
 
-test('generator: a tier too dense for the clip is unavailable until trimmed', async ({ page }) => {
-  await page.goto('/momento/');
-  await page.setInputFiles('#file-input', {
-    name: 'long.wav',
-    mimeType: 'audio/wav',
-    buffer: wavFixture(6),
-  });
-  await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 20_000 });
-
-  // ~5.9s is past Lyra's 4.4s ceiling at the 0.32mm floor, so Best is offered
-  // only as something to trim into.
-  const best = page.locator('.tier[data-key="best"]');
-  await expect(best).toHaveClass(/unavailable/);
-  await expect(page.locator('#stats-line')).toContainText('Codec 2');
-  const trim = best.locator('[data-trim]');
-  await expect(trim).toContainText('Trim to');
-
-  await trim.click();
-  await expect(best).not.toHaveClass(/unavailable/);
-  await expect(page.locator('#stats-line')).toContainText('Lyra 3.2 kbps', { timeout: 20_000 });
+test('generator: a shorter clip gets a deeper Mimi code stack', async ({ page }) => {
+  test.setTimeout(120_000);
+  const depthFor = async (seconds: number): Promise<number> => {
+    await page.goto('/momento/');
+    await page.setInputFiles('#file-input', {
+      name: 'clip.wav',
+      mimeType: 'audio/wav',
+      buffer: wavFixture(seconds),
+    });
+    await expect(page.locator('#stats-line')).toContainText('codes/frame', { timeout: 60_000 });
+    const text = await page.locator('#stats-line').textContent();
+    return Number(/\((\d+) codes\/frame\)/.exec(text ?? '')![1]);
+  };
+  const short = await depthFor(3);
+  const long = await depthFor(10);
+  expect(short).toBe(20);
+  expect(long).toBeGreaterThanOrEqual(10);
+  expect(long).toBeLessThan(short);
 });

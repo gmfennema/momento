@@ -11,8 +11,20 @@ import './style.css';
 // controlled and isolated, and dev/preview get real headers, so this no-ops.
 // The reload is disarmed as soon as the user starts doing anything: blowing
 // away an in-progress recording or a half-scanned card is far worse than one
-// session without the Lyra tier (Codec 2 still works un-isolated).
-if (!crossOriginIsolated && 'serviceWorker' in navigator && !sessionStorage.getItem('coi-reloaded')) {
+// session without Lyra playback for older cards (everything else works
+// un-isolated, just single-threaded).
+//
+// The same reload also picks up a new version: the worker serves the cached
+// shell first, so a returning visitor would otherwise run the previous build
+// for this whole visit — and a previous player can't read a card made with a
+// newer codec. When an updated worker takes over before the visitor has
+// touched anything, reload into the new build. (A page that had no worker at
+// load and is already isolated is running the current build — no reload.)
+if (
+  'serviceWorker' in navigator &&
+  (!crossOriginIsolated || navigator.serviceWorker.controller) &&
+  !sessionStorage.getItem('coi-reloaded')
+) {
   let armed = true;
   const disarm = (): void => {
     armed = false;

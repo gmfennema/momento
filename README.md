@@ -13,10 +13,10 @@ uploads — encoding and decoding happen entirely in the browser.
 1. **Generator** (`/`): upload or record audio → conditioned for the codec
    (high-pass, leading/trailing silence dropped, loudness normalized) →
    trimmed to ≤10s → compressed in-browser with either
-   [Lyra V2](https://github.com/google/lyra) (neural codec, 16 kHz wideband) or
-   the [Codec 2](https://github.com/drowe67/codec2) vocoder (8 kHz) → split
-   into self-describing chunks → each chunk becomes a Base45/alphanumeric QR
-   code → laid out on a card image with one **entry QR** that carries the
+   [Mimi](https://huggingface.co/kyutai/mimi) (Kyutai's neural speech codec,
+   24 kHz, run by onnxruntime-web) or the
+   [Codec 2](https://github.com/drowe67/codec2) vocoder (8 kHz) → split
+   into self-describing chunks → each chunk becomes a byte-mode QR code → laid out on a card image with one **entry QR** that carries the
    player URL. By default the back is **textured**: a field of dark/light cells
    at the same module pitch as the codes fills the card edge to edge, so the
    data codes read as buried in static while the entry code sits in a clean
@@ -31,7 +31,10 @@ uploads — encoding and decoding happen entirely in the browser.
    same setup as the back.
 2. **Player** (`/#p`): tap scan → the camera reads codes in any order (multiple
    per frame) with live progress → chunks are reassembled → the codec named in
-   the chunk headers decodes → Web Audio plays the sound. Codec 2's 8 kHz
+   the chunk headers decodes → Web Audio plays the sound. A Mimi card decodes
+   straight to 24 kHz wideband voice (the ~60 MB decoder model is fetched on
+   first use and cached; the scanner starts that download as soon as the first
+   code names the codec). Codec 2's 8 kHz
    decode also gets a playback-side restoration before playback, at zero card
    cost: the [LavaSR](https://github.com/ysharma3501/LavaSR) neural
    speech-restoration model (fp16 ONNX, ~27 MB fetched on first use and
@@ -49,39 +52,55 @@ uploads — encoding and decoding happen entirely in the browser.
 
 ### Quality tiers
 
-Three tiers, cheapest first. Every one of them is *restored on playback* — the
-Codec 2 rungs by the neural bandwidth-extension model, the Lyra rung by being
-wideband already — so the real difference between them is how much of the
-original voice the card carries, and how long a clip fits.
+Two rungs. The card holds about 1.85 KB at the 0.32 mm floor; what changes
+between them is how well that budget is spent.
 
-| Tier | Codec | Max clip at the 0.32 mm floor | Character |
+| Tier | Codec | 10 s clip | Short clip (≤ 4.4 s) |
 |---|---|---|---|
-| Basic | Codec 2 1400 | 10.0s | Standard voice, restored on playback. Roomiest codes; fits a full-length clip |
-| Good | Codec 2 2400 | 5.9s | Clearer voice, restored on playback. Denser card |
-| Best (default) | Lyra 3.2 kbps | 4.4s | Natural wideband voice straight from the neural codec. Densest card |
+| Basic | Codec 2 1400 + neural restoration | 1.4 kbps | 1.4 kbps, bigger dots |
+| Best (default) | Mimi, depth chosen per clip | 10 codes/frame, 1.38 kbps | 20 codes/frame, 2.75 kbps |
+
+**Best fills the card.** Mimi describes each 80 ms frame with a stack of up to
+32 eleven-bit codes, coarse to fine, and any prefix of the stack decodes. The
+generator gives every clip the deepest stack (8–20 codes) whose card still
+clears the floor: 20 codes up to ~4.4 s, 17 at 6 s, 13 at 8 s, 10 at 10 s. Past
+20 codes the gain is negligible, so short clips spend spare room on bigger dots
+instead.
+
+Measured on 8 LibriSpeech speakers plus a harder set (expressive speech —
+whisper, laughter — accents, and simulated phone recordings in a noisy room),
+9.5 s clips:
+
+| Pipeline | UTMOS ↑ | Speaker similarity ↑ | Word error ↓ | Hard set: UTMOS / word error |
+|---|---|---|---|---|
+| Original | 4.14 | 1.000 | — | 2.97 / — |
+| Mimi, 20 codes (≤ 4.4 s cards) | 4.03 | 0.991 | 2.8% | 2.84 / 10.6% |
+| Mimi, 10 codes (10 s cards) | 3.80 | 0.979 | 2.8% | 2.75 / 10.1% |
+| Lyra 3.2 kbps (former Best, ≤ 4.4 s) | 2.96 | 0.966 | 4.7% | 2.25 / 10.6% |
+| Codec 2 1400 + restoration (Basic) | 1.35 | 0.857 | 8.7% | 1.34 / 37.6% |
+
+UTMOS is a learned naturalness score (1–5; the hard set's originals score low
+because they are whispered, noisy, or reverberant); speaker similarity is
+WavLM-SV cosine; word error is Whisper small.en against its own transcript of
+the original. Mimi rows are the int8 models the site ships.
+
+Lyra 3.2 kbps and Codec 2 2400 were the middle rungs until Mimi beat both at
+every clip length; the generator no longer makes them, but the player still
+plays every card ever engraved — chunk headers carry a wire-format version
+(0 = Codec 2, 1 = Lyra, 2 = Mimi with its depth in the mode bits), and older
+cards' Base45 codes still read.
 
 **No card is ever laid out below 0.32 mm modules.** That is a hard floor, not a
 warning: the generator reports the physical module (dot) size live, and a tier
-whose card would fall under the floor is simply *unavailable* — dimmed, with a
-**Trim to X.Xs** button that shortens the trim window just enough to unlock it.
-The tier tiles show each rung's live limit ("fits up to 5.9s") against the
-current trim, so the trade is visible before anything is engraved. The tier you
-pick is a preference: if a later edit makes the clip too long for it, the card
-quietly drops to the best rung that still fits and says so.
-
-The floor is deliberately above the old 0.30 mm soft warning, and on a standard
-card it also holds the data codes at QR version 10 or lower (≤ 57 modules a
-side), which matters as much as the millimetres: every extra version is 4 more
-modules the camera must resolve across the same symbol.
+whose card would fall under the floor is simply *unavailable*. On a standard
+card the floor also holds the data codes at QR version 10 or lower (≤ 57
+modules a side), which matters as much as the millimetres: every extra version
+is 4 more modules the camera must resolve across the same symbol.
 
 Each tile also has a **▶ Preview** button (and the card panel a **▶ Hear this
-card**). Preview runs the *player's* pipeline — encode, decode, neural
-restoration and all — so you hear exactly what a scanned card will play, not an
-approximation of it. Playback tells you which restoration your device managed.
-
-Chunk headers carry a wire-format version, so cards engraved before the Lyra
-tier existed (version 0 = Codec 2), or with Codec 2 modes no longer offered,
-keep playing forever.
+card**). Preview runs the *player's* pipeline — encode, decode, restoration and
+all — so you hear exactly what a scanned card will play, not an approximation
+of it.
 
 ### Card back texture
 
@@ -107,12 +126,13 @@ blurred ~340 dpi render, and asserts every chunk still comes back.
 
 ### Cross-origin isolation
 
-The Lyra wasm uses threads, so it needs `SharedArrayBuffer`, which browsers
-only enable on cross-origin isolated pages. The dev/preview servers send the
-COOP/COEP headers directly; on GitHub Pages (which can't set headers) the
+The Lyra wasm (playback of older cards) uses threads, so it needs
+`SharedArrayBuffer`, which browsers only enable on cross-origin isolated pages;
+onnxruntime also uses threads there when it can. The dev/preview servers send
+the COOP/COEP headers directly; on GitHub Pages (which can't set headers) the
 service worker injects them into document responses, and `main.ts` reloads
-once on the very first visit so isolation kicks in. Browsers where that fails
-still get the Codec 2 tiers — the Best tier is simply disabled.
+once on the very first visit so isolation kicks in. Mimi and Codec 2 run
+without it, single-threaded.
 
 ## Engraving notes
 
@@ -142,9 +162,11 @@ npm run e2e        # Playwright smoke test against vite preview
 The keystone test (`tests/e2e-card.test.ts`) proves the whole physical
 contract in CI: synth audio → encode → render the card SVG → rasterize → scan
 the image with zxing → reassemble → decode → audio again, for every tier and
-the inverted variant. The Lyra wasm itself can't run under node (it needs
-browser threads), so its tier is proven with a same-size payload there, and
-the full neural encode→card→photo→decode loop runs in the Playwright suite.
+the inverted variant, plus a degraded 900 px "phone photo" of a full 10 s card
+for both rungs. `tests/mimi.test.ts` runs the shipped Mimi models through
+onnxruntime-web in node, and the Playwright suite runs the full
+encode→card→photo→decode loop in a browser. `scripts/mimi/` rebuilds the
+models.
 
 ## Deploying
 
@@ -162,6 +184,7 @@ keeps resolving.
 - [ ] Android Chrome: same two flows; torch button appears when supported
 - [ ] Upload a photo of the card (`#p`) — including a HEIC straight from the iPhone camera roll
 - [ ] Inverted (black) card scans
+- [ ] Best (Mimi) card on an older iPhone and a mid-range Android: first scan downloads the ~56 MB model with progress, decodes a 10 s clip without the tab reloading (≈330 MB peak in desktop Chrome)
 - [ ] Airplane mode after first visit: generator still loads (PWA offline)
 
 ## Licenses
@@ -171,7 +194,9 @@ LGPL 2.1 — see `public/codec2/NOTICE.md` for provenance and how to swap in
 your own build. The Lyra runtime copied to `public/lyra/` at install time is
 [lyra-codec](https://github.com/neuvideo/lyra-js) (ISC) wrapping
 [google/lyra](https://github.com/google/lyra) models (Apache 2.0) — see
-`public/lyra/NOTICE.md`. The neural enhancer models in `public/bwe/` are
+`public/lyra/NOTICE.md`. The Mimi models in `public/mimi/` are int8
+conversions of [kyutai/mimi](https://huggingface.co/kyutai/mimi) (CC-BY-4.0)
+— see `public/mimi/NOTICE.md`. The neural enhancer models in `public/bwe/` are
 fp16 conversions of [LavaSR](https://github.com/ysharma3501/LavaSR) via
 [LavaSR-ONNX](https://github.com/Topping1/LavaSR-ONNX) (both Apache 2.0),
 run by [onnxruntime-web](https://github.com/microsoft/onnxruntime) (MIT)

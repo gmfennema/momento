@@ -42,7 +42,7 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,wasm,tflite,webmanifest,png,svg,ico,woff2}'],
         // The neural enhancer's runtime and models are far too big to force
         // on every visitor — the service worker caches them on first use.
-        globIgnores: ['ort/**', 'bwe/**'],
+        globIgnores: ['ort/**', 'bwe/**', 'mimi/**'],
         // the Lyra wasm is ~3.8 MB
         maximumFileSizeToCacheInBytes: 5_000_000,
       },

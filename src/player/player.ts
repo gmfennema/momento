@@ -6,13 +6,14 @@ import { playPcm, type Playback } from '../lib/audio';
 import { warmUpNeuralBwe } from '../lib/bwe';
 import { CODEC2_SAMPLE_RATE } from '../lib/codec2';
 import { warmUpLyra } from '../lib/lyra';
+import { MimiDownloadError, MimiTimeoutError, warmUpMimi } from '../lib/mimi';
 import {
   decodeForPlayback,
   LyraUnavailableError,
   UnknownLyraModeError,
   type Restoration,
 } from '../lib/restore';
-import { ChunkCollector, WIRE_CODEC2, WIRE_LYRA } from '../lib/chunk';
+import { ChunkCollector, WIRE_CODEC2, WIRE_LYRA, WIRE_MIMI } from '../lib/chunk';
 import { brandHeader } from '../lib/brand';
 import { scanPhoto, startScanner, type ScannerHandle } from './scanner';
 
@@ -49,9 +50,11 @@ export function mountPlayer(root: HTMLElement): void {
 
   function updateProgress(count: HTMLElement, strip: HTMLElement, collector: ChunkCollector): void {
     // The first chunk names the codec — fetch that codec's wasm + models
-    // (Lyra ~7 MB, neural enhancer ~27 MB) only for cards that actually use
-    // them, overlapping the download with the remaining scan.
-    if (collector.wireVersion === WIRE_LYRA) warmUpLyra();
+    // (Mimi decoder ~60 MB, Lyra ~7 MB, neural enhancer ~27 MB) only for
+    // cards that actually use them, overlapping the download with the
+    // remaining scan.
+    if (collector.wireVersion === WIRE_MIMI) warmUpMimi('decoder');
+    else if (collector.wireVersion === WIRE_LYRA) warmUpLyra();
     else if (collector.wireVersion === WIRE_CODEC2) warmUpNeuralBwe();
     const { got, total, missing } = collector.progress;
     count.textContent = total ? `${got} of ${total}` : 'Looking…';
@@ -122,7 +125,7 @@ export function mountPlayer(root: HTMLElement): void {
           scanStage.classList.add('flash');
         },
         onComplete() {
-          void showDecoding(scanner!.collector);
+          void showDecoding(scanner!.collector.assemble());
         },
       });
       scanStage.prepend(scanner.video);
@@ -182,7 +185,7 @@ export function mountPlayer(root: HTMLElement): void {
         if (!alive) return;
         updateProgress(count, strip, collector);
         if (collector.complete) {
-          void showDecoding(collector);
+          void showDecoding(collector.assemble());
           return;
         }
       }
@@ -220,12 +223,12 @@ export function mountPlayer(root: HTMLElement): void {
     stage.querySelector('#upload')!.addEventListener('click', () => input.click());
   }
 
-  async function showDecoding(collector: ChunkCollector): Promise<void> {
+  async function showDecoding(card: AssembledCard): Promise<void> {
     scanner = null;
     stage.innerHTML = `<p class="hint">Rebuilding the audio from the card…</p>`;
     const note = stage.querySelector<HTMLElement>('.hint')!;
     try {
-      const { version, modeId, data } = collector.assemble();
+      const { version, modeId, data } = card;
       // Same pipeline the generator previews with, watchdog included: a Codec 2
       // card always gets a restoration, neural when it can finish, DSP when not.
       const restored = await decodeForPlayback(version, modeId, data, (msg) => {
@@ -234,8 +237,10 @@ export function mountPlayer(root: HTMLElement): void {
       pcm = restored.pcm;
       pcmRate = restored.sampleRate;
       restoration = restored.restoration;
+      clearStashedCard();
       showReady();
     } catch (e) {
+      clearStashedCard(); // the timeout branch below re-stashes; nothing else should resume
       if (e instanceof UnknownLyraModeError) {
         // A reserved Lyra mode from a future generator — decoding it as
         // 3.2 kbps would play garbage, so be honest instead.
@@ -248,6 +253,29 @@ export function mountPlayer(root: HTMLElement): void {
         // worker kicked in — a reload fixes that; a truly old browser won't.
         stage.innerHTML = `<div class="error">This card's audio needs one more page reload to unlock — reload and scan again. If it keeps happening, update your browser.</div>`;
         setTimeout(showIdle, 5000);
+        return;
+      }
+      if (e instanceof MimiTimeoutError) {
+        // The model runtime stopped answering, and it can't be restarted
+        // in-page. Carry the scanned bytes (≤ 2 KB) across a reload so the
+        // listener doesn't have to rescan.
+        stashCard(card);
+        stage.innerHTML = `<div class="error">The voice model stopped responding on this device.</div>
+          <button id="retry" class="primary">Reload and try again</button>
+          <button id="again">Scan another card</button>`;
+        stage.querySelector('#retry')!.addEventListener('click', () => location.reload());
+        stage.querySelector('#again')!.addEventListener('click', () => {
+          clearStashedCard();
+          showIdle();
+        });
+        return;
+      }
+      if (e instanceof MimiDownloadError) {
+        // The codes were read fine; the model download failed. Keep the scan
+        // and let the listener retry rather than rescanning.
+        stage.innerHTML = `<div class="error">Couldn't fetch the voice model — check the connection.</div>
+          <button id="retry" class="primary">Try again</button>`;
+        stage.querySelector('#retry')!.addEventListener('click', () => void showDecoding(card));
         return;
       }
       stage.innerHTML = `<div class="error">Couldn't rebuild the audio — please rescan the card.</div>`;
@@ -263,10 +291,16 @@ export function mountPlayer(root: HTMLElement): void {
       restoration === 'dsp'
         ? `<p class="hint">Neural restoration wasn't available on this device, so this is the standard restoration.</p>`
         : '';
+    // CC-BY attribution for the model every Mimi listener downloads.
+    const creditNote =
+      restoration === 'mimi'
+        ? `<p class="hint">Voice decoded with Kyutai's <a href="https://huggingface.co/kyutai/mimi" target="_blank" rel="noreferrer">Mimi</a> codec (<a href="mimi/NOTICE.md" target="_blank">CC-BY-4.0</a>).</p>`
+        : '';
     stage.innerHTML = `
       <button class="big-play" id="play">▶</button>
       <p class="hint">${seconds}s of audio, rebuilt entirely from the card.</p>
       ${fallbackNote}
+      ${creditNote}
       <button id="again">Scan another card</button>
     `;
     const playBtn = stage.querySelector<HTMLButtonElement>('#play')!;
@@ -286,5 +320,45 @@ export function mountPlayer(root: HTMLElement): void {
     });
   }
 
-  showIdle();
+  // A card stashed before a reload (see the MimiTimeoutError path) resumes
+  // straight into decoding.
+  const resumed = takeStashedCard();
+  if (resumed) void showDecoding(resumed);
+  else showIdle();
+}
+
+type AssembledCard = ReturnType<ChunkCollector['assemble']>;
+const STASH_KEY = 'momento-pending-card';
+
+function clearStashedCard(): void {
+  try {
+    sessionStorage.removeItem(STASH_KEY);
+  } catch {
+    // nothing stashed that we could reach anyway
+  }
+}
+
+function stashCard(card: AssembledCard): void {
+  try {
+    sessionStorage.setItem(
+      STASH_KEY,
+      JSON.stringify({ version: card.version, modeId: card.modeId, data: Array.from(card.data) }),
+    );
+  } catch {
+    // storage unavailable — the reload just means a rescan
+  }
+}
+
+/** The stash outlives the resumed decode (it is cleared once audio is ready),
+ * so a reload that lands mid-decode — e.g. a service-worker update — resumes
+ * again instead of losing the card. */
+function takeStashedCard(): AssembledCard | null {
+  try {
+    const raw = sessionStorage.getItem(STASH_KEY);
+    if (!raw) return null;
+    const { version, modeId, data } = JSON.parse(raw) as { version: number; modeId: number; data: number[] };
+    return { version, modeId, data: Uint8Array.from(data) };
+  } catch {
+    return null;
+  }
 }

@@ -1,19 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { base45Length } from '../src/lib/base45';
 import { HEADER_BYTES } from '../src/lib/chunk';
 import {
-  alnumCapacityL,
   bestTierThatFits,
+  byteCapacityL,
   CARD_H_MM,
   CARD_W_MM,
   estimatePayloadBytes,
   MAX_SECONDS,
   maxChunkBytesForVersion,
   maxSecondsForTier,
+  MIMI_MAX_DEPTH_ON_CARD,
+  MIMI_MIN_DEPTH,
+  mimiDepthFor,
   MODULE_FLOOR_MM,
   planCard,
   TIERS,
 } from '../src/lib/layout';
+import { mimiPayloadBytes } from '../src/lib/mimi';
 
 describe('planCard', () => {
   for (const tier of TIERS) {
@@ -24,7 +27,7 @@ describe('planCard', () => {
       expect(plan.chunkCount * plan.payloadPerChunk).toBeGreaterThanOrEqual(bytes);
       // Largest chunk (header + payload) must fit the chosen QR version.
       const chunkBytes = HEADER_BYTES + plan.payloadPerChunk;
-      expect(base45Length(chunkBytes)).toBeLessThanOrEqual(alnumCapacityL(plan.qrVersion));
+      expect(chunkBytes).toBeLessThanOrEqual(byteCapacityL(plan.qrVersion));
       // Every cell must lie inside the card.
       for (const cell of plan.cells) {
         expect(cell.xMm).toBeGreaterThanOrEqual(0);
@@ -56,7 +59,9 @@ describe('planCard', () => {
   });
 
   it('reports the longest clip each tier can hold', () => {
-    const expected: Record<string, number> = { best: 4.4, good: 5.9, basic: 10 };
+    // Mimi at its shallowest depth holds a full clip; the depth it actually
+    // gets is the card's to choose (see the mimiDepthFor tests).
+    const expected: Record<string, number> = { best: 10, basic: 10 };
     for (const textured of [false, true]) {
       const spec = { inverted: false, textured };
       for (const tier of TIERS) {
@@ -87,15 +92,15 @@ describe('planCard', () => {
     }
   });
 
-  it('picks the best tier a clip can actually have', () => {
-    const spec = { inverted: false };
-    expect(bestTierThatFits(4, spec, true).codec).toBe('lyra');
-    expect(bestTierThatFits(5, spec, true).key).toBe('good');
-    expect(bestTierThatFits(7, spec, true).key).toBe('basic');
-    expect(bestTierThatFits(10, spec, true).key).toBe('basic');
+  it('picks Mimi for every clip length when the browser can run it', () => {
+    for (const textured of [false, true]) {
+      for (const seconds of [0.5, 4, 7, 10]) {
+        expect(bestTierThatFits(seconds, { inverted: false, textured }, true).codec).toBe('mimi');
+      }
+    }
   });
 
-  it('never picks Lyra when the browser cannot run it', () => {
+  it('never picks Mimi when the browser cannot run it', () => {
     for (const seconds of [1, 3, 5, 10]) {
       expect(bestTierThatFits(seconds, { inverted: false }, false).codec).toBe('codec2');
     }
@@ -111,9 +116,8 @@ describe('planCard', () => {
         expect(plan.warnings).not.toContain('module-below-0.30');
         expect(plan.warnings).not.toContain('module-below-0.25');
         expect(plan.moduleMm).toBeGreaterThanOrEqual(MODULE_FLOOR_MM);
-        // …and nothing better may also clear it.
-        for (const other of TIERS) {
-          if (other.bytesPerSec <= tier.bytesPerSec) continue;
+        // …and no higher rung may also clear it.
+        for (const other of TIERS.slice(TIERS.indexOf(tier) + 1)) {
           const alt = planCard(estimatePayloadBytes(seconds, other), spec);
           expect(alt.moduleMm).toBeLessThan(MODULE_FLOOR_MM);
         }
@@ -162,6 +166,51 @@ describe('planCard', () => {
           b.yMm < a.yMm + a.sizeMm;
         expect(overlap).toBe(false);
       }
+    }
+  });
+});
+
+describe('mimiDepthFor', () => {
+  const frames = (seconds: number) => Math.ceil(seconds * 12.5 - 1e-9);
+
+  it('fills the card as deep as the floor allows, and no deeper', () => {
+    for (const textured of [false, true]) {
+      const spec = { inverted: false, textured };
+      for (let tenths = 5; tenths <= 100; tenths++) {
+        const seconds = tenths / 10;
+        const depth = mimiDepthFor(seconds, spec)!;
+        expect(depth).toBeGreaterThanOrEqual(MIMI_MIN_DEPTH);
+        expect(depth).toBeLessThanOrEqual(MIMI_MAX_DEPTH_ON_CARD);
+        expect(planCard(mimiPayloadBytes(frames(seconds), depth), spec).moduleMm).toBeGreaterThanOrEqual(
+          MODULE_FLOOR_MM,
+        );
+        if (depth < MIMI_MAX_DEPTH_ON_CARD) {
+          let deeper = 0;
+          try {
+            deeper = planCard(mimiPayloadBytes(frames(seconds), depth + 1), spec).moduleMm;
+          } catch {
+            deeper = 0;
+          }
+          expect(deeper).toBeLessThan(MODULE_FLOOR_MM);
+        }
+      }
+    }
+  });
+
+  it('gives a full 10s clip at least 10 codes a frame, and a short one the cap', () => {
+    for (const textured of [false, true]) {
+      const spec = { inverted: false, textured };
+      expect(mimiDepthFor(10, spec)!).toBeGreaterThanOrEqual(10);
+      expect(mimiDepthFor(4.4, spec)).toBe(MIMI_MAX_DEPTH_ON_CARD);
+    }
+  });
+
+  it('never gets deeper as the clip gets longer', () => {
+    let prev = Infinity;
+    for (let tenths = 5; tenths <= 100; tenths++) {
+      const depth = mimiDepthFor(tenths / 10, { inverted: false })!;
+      expect(depth).toBeLessThanOrEqual(prev);
+      prev = depth;
     }
   });
 });
