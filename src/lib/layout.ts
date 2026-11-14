@@ -4,35 +4,34 @@
 // MAXIMIZES physical module size (the dominant factor in whether an engraved
 // card scans), and report the numbers honestly so the UI can warn the maker.
 
-import { maxBytesForChars } from './base45';
 import {
   HEADER_BYTES,
-  LYRA_MODE_3200,
+  mimiModeId,
   WIRE_CODEC2,
-  WIRE_LYRA,
+  WIRE_MIMI,
   type Codec2Mode,
   type CodecModeId,
 } from './chunk';
-import { LYRA_BYTES_PER_FRAME, LYRA_BYTES_PER_SEC } from './lyra';
+import { MIMI_CODE_BITS, MIMI_FRAME_RATE, mimiPayloadBytes } from './mimi';
 
 /** Standard US business card. */
 export const CARD_W_MM = 88.9;
 export const CARD_H_MM = 50.8;
 
-/** QR alphanumeric capacity at ECC level L, versions 1..20 (ISO/IEC 18004). */
-const ALNUM_CAPACITY_L = [
-  25, 47, 77, 114, 154, 195, 224, 279, 335, 395, 468, 535, 619, 667, 758, 854,
-  938, 1046, 1153, 1249,
+/** QR byte-mode capacity at ECC level L, versions 1..20 (ISO/IEC 18004). */
+const BYTE_CAPACITY_L = [
+  17, 32, 53, 78, 106, 134, 154, 192, 230, 271, 321, 367, 425, 458, 520, 586,
+  644, 718, 792, 858,
 ] as const;
 
-export function alnumCapacityL(version: number): number {
-  const c = ALNUM_CAPACITY_L[version - 1];
+export function byteCapacityL(version: number): number {
+  const c = BYTE_CAPACITY_L[version - 1];
   if (c === undefined) throw new Error(`unsupported QR version ${version}`);
   return c;
 }
 
 interface TierBase {
-  key: 'basic' | 'good' | 'best';
+  key: 'basic' | 'best';
   wireVersion: number;
   modeId: CodecModeId;
   bytesPerSec: number;
@@ -44,23 +43,32 @@ interface TierBase {
   blurb: string;
 }
 
-export type Tier = TierBase &
-  ({ codec: 'codec2'; mode: Codec2Mode } | { codec: 'lyra' });
+export type Tier = TierBase & ({ codec: 'codec2'; mode: Codec2Mode } | { codec: 'mimi' });
 
 /** Longest clip that may go on a card. Lives here rather than in lib/audio.ts
  * (browser-only) so the planner — and its node tests — can reason about the
  * whole duration range without pulling in Web Audio. */
 export const MAX_SECONDS = 10;
 
+/** Mimi depth range the generator chooses from. Below 8 codes a frame the
+ * voice starts to blur (UTMOS 3.75 at 8, 3.83 at 10 on our test set); above 20
+ * the gain is under 0.02 while the card keeps getting denser, so short clips
+ * spend their spare room on bigger dots instead. */
+export const MIMI_MIN_DEPTH = 8;
+export const MIMI_MAX_DEPTH_ON_CARD = 20;
+
 /**
- * The quality ladder, cheapest first — three rungs, each a real choice rather
- * than a byte-shaving variant of its neighbour. Every rung is playable on
- * every card: the two Codec 2 rungs are restored by the neural model at
- * playback time (see lib/bwe.ts), so the ladder is about how much of the
- * original voice the card carries, not about how good it can sound.
+ * The ladder, cheapest first — two rungs:
  *
- * A rung is only offered when its card clears MODULE_FLOOR_MM, so the honest
- * difference between them is how long a clip they can hold.
+ * - Basic: Codec 2 at 1.4 kbps, restored at playback by the neural
+ *   bandwidth-extension model (lib/bwe.ts). No codec download for the maker,
+ *   so it is the fallback when Mimi can't run.
+ * - Best: the Mimi neural codec, whose depth (codes per frame) the generator
+ *   sets per clip so the card is as full as the scannability floor allows —
+ *   see mimiDepthFor. A full 10 s clip still gets ≥ 10 codes a frame.
+ *
+ * Lyra 3.2 kbps and Codec 2 2400 used to sit between them; Mimi out-scores
+ * both at every clip length (measured), so they are decode-only now.
  */
 export const TIERS: readonly Tier[] = [
   {
@@ -72,28 +80,19 @@ export const TIERS: readonly Tier[] = [
     bytesPerSec: 175,
     frameBytes: 7,
     label: 'Basic',
-    blurb: 'Standard voice, restored by the neural model on playback. Roomiest codes — fits a full-length clip.',
-  },
-  {
-    key: 'good',
-    codec: 'codec2',
-    mode: '2400',
-    wireVersion: WIRE_CODEC2,
-    modeId: 1,
-    bytesPerSec: 300,
-    frameBytes: 6,
-    label: 'Good',
-    blurb: 'Clearer voice, restored by the neural model on playback. Denser card, so medium-length clips.',
+    blurb: 'Codec 2 vocoder, restored by a neural model on playback. Smallest download; fits a full-length clip.',
   },
   {
     key: 'best',
-    codec: 'lyra',
-    wireVersion: WIRE_LYRA,
-    modeId: LYRA_MODE_3200,
-    bytesPerSec: LYRA_BYTES_PER_SEC,
-    frameBytes: LYRA_BYTES_PER_FRAME,
+    codec: 'mimi',
+    wireVersion: WIRE_MIMI,
+    // Planning numbers are the shallowest depth the ladder offers: "does this
+    // clip fit at all". The real depth is chosen per clip (mimiDepthFor).
+    modeId: mimiModeId(MIMI_MIN_DEPTH),
+    bytesPerSec: (MIMI_MIN_DEPTH * MIMI_CODE_BITS * MIMI_FRAME_RATE) / 8,
+    frameBytes: Math.ceil((MIMI_MIN_DEPTH * MIMI_CODE_BITS) / 8),
     label: 'Best',
-    blurb: 'Natural wideband voice straight from the Lyra neural codec. Densest card; short clips only.',
+    blurb: 'Natural wideband voice from the Mimi neural codec. Shorter clips get more detail.',
   },
 ] as const;
 
@@ -103,7 +102,35 @@ export const TIERS: readonly Tier[] = [
  * larger guess is not free: 16 bytes of imaginary payload is enough to push a
  * plan up a QR version and shrink every module on the card.) */
 export function estimatePayloadBytes(seconds: number, tier: Tier): number {
+  if (tier.codec === 'mimi') return mimiPayloadBytes(mimiFrames(seconds), MIMI_MIN_DEPTH);
   return Math.ceil(seconds * tier.bytesPerSec) + tier.frameBytes;
+}
+
+/** Mimi frames in a clip (the encoder rounds a partial frame up). */
+function mimiFrames(seconds: number): number {
+  return Math.ceil(seconds * MIMI_FRAME_RATE - 1e-9);
+}
+
+/** The deepest Mimi code stack (≤ MIMI_MAX_DEPTH_ON_CARD) whose card still
+ * clears the floor for a clip this long, or null when even MIMI_MIN_DEPTH
+ * doesn't fit. Module size only shrinks as depth grows, so walk down from the
+ * top. */
+export function mimiDepthFor(seconds: number, spec: CardSpec): number | null {
+  return mimiDepthForFrames(mimiFrames(seconds), spec);
+}
+
+/** mimiDepthFor for an exact frame count — what the generator uses, since the
+ * real slice can be a sample or two longer than the trim window's duration
+ * and that is enough to add a frame at a boundary. */
+export function mimiDepthForFrames(frames: number, spec: CardSpec): number | null {
+  for (let depth = MIMI_MAX_DEPTH_ON_CARD; depth >= MIMI_MIN_DEPTH; depth--) {
+    try {
+      if (planCard(mimiPayloadBytes(frames, depth), spec).moduleMm >= MODULE_FLOOR_MM) return depth;
+    } catch {
+      // too large for the card at all — try shallower
+    }
+  }
+  return null;
 }
 
 /** No card is ever laid out denser than this — the dot size a phone camera
@@ -153,11 +180,11 @@ export function maxSecondsForTier(tier: Tier, spec: CardSpec): number {
 export function bestTierThatFits(
   seconds: number,
   spec: CardSpec,
-  allowLyra: boolean,
+  allowMimi: boolean,
 ): Tier {
   for (let i = TIERS.length - 1; i >= 0; i--) {
     const tier = TIERS[i]!;
-    if (tier.codec === 'lyra' && !allowLyra) continue;
+    if (tier.codec === 'mimi' && !allowMimi) continue;
     if (tierFits(seconds, tier, spec)) return tier;
   }
   throw new Error('audio too large to fit on a card');
@@ -227,7 +254,7 @@ const TEXTURE_MODULE_CAP_MM = 0.35;
 const TEXTURE_MODULE_FLOOR_MM = MODULE_FLOOR_MM;
 
 export function maxChunkBytesForVersion(version: number): number {
-  return maxBytesForChars(alnumCapacityL(version));
+  return byteCapacityL(version);
 }
 
 /**

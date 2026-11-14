@@ -3,7 +3,7 @@
 // serialized — frames arriving while one is in flight are skipped.
 
 import { prepareZXingModule, readBarcodes } from 'zxing-wasm/reader';
-import { base45Decode } from '../lib/base45';
+import { chunkBytesFromScan } from '../lib/qr';
 import { ChunkCollector, type AddResult } from '../lib/chunk';
 
 // Self-hosted wasm (copied to public/zxing/ at install time) so the PWA works
@@ -72,12 +72,8 @@ export async function scanPhoto(file: File, collector: ChunkCollector): Promise<
 
   const summary: PhotoScanResult = { chunks: 0, newChunks: 0, wrongCard: false };
   for (const r of results) {
-    let bytes: Uint8Array;
-    try {
-      bytes = base45Decode(r.text);
-    } catch {
-      continue; // entry QR / foreign code
-    }
+    const bytes = chunkBytesFromScan(r.text, r.bytes);
+    if (!bytes) continue; // entry QR / foreign code
     const outcome = collector.add(bytes);
     if (outcome === 'new') {
       summary.chunks++;
@@ -140,12 +136,8 @@ export async function startScanner(cb: ScannerCallbacks): Promise<ScannerHandle>
       });
       for (const r of results) {
         if (!running) break;
-        let bytes: Uint8Array;
-        try {
-          bytes = base45Decode(r.text);
-        } catch {
-          continue; // entry QR / foreign code
-        }
+        const bytes = chunkBytesFromScan(r.text, r.bytes);
+        if (!bytes) continue; // entry QR / foreign code
         const outcome = collector.add(bytes);
         if (outcome === 'new') cb.onChunk(outcome);
         else if (outcome === 'wrong-card') cb.onChunk(outcome);

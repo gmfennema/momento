@@ -11,13 +11,24 @@ import {
   type Playback,
 } from '../lib/audio';
 import { warmUpNeuralBwe } from '../lib/bwe';
-import { lyraSupported, warmUpLyra } from '../lib/lyra';
+import {
+  MimiDownloadError,
+  MimiTimeoutError,
+  mimiFramesFor,
+  mimiPayloadBytes,
+  mimiSupported,
+  warmUpMimi,
+  MIMI_CODE_BITS,
+  MIMI_FRAME_RATE,
+} from '../lib/mimi';
 import { preparePcm } from '../lib/preprocess';
 import { randomCardId, splitPayload } from '../lib/chunk';
 import {
   bestTierThatFits,
   estimatePayloadBytes,
   maxSecondsForTier,
+  MIMI_MIN_DEPTH,
+  mimiDepthForFrames,
   MODULE_FLOOR_MM,
   planCard,
   tierFits,
@@ -29,6 +40,7 @@ import {
 import {
   decodeForPlayback,
   encodeForTier,
+  modeIdForTier,
   previewForTier,
   type RestoredAudio,
 } from '../lib/restore';
@@ -67,6 +79,8 @@ interface State {
   cardId: number;
   // derived
   tier: Tier | null;
+  /** Mimi codes per frame the card carries (0 for Codec 2) */
+  depth: number;
   encoded: Uint8Array | null;
   plan: CardPlan | null;
   renderInput: RenderInput | null;
@@ -110,9 +124,9 @@ export function mountGenerator(root: HTMLElement): void {
 
     <div class="panel">
       <h2>02 · Voice quality</h2>
-      <p class="hint" style="margin-top:0">Every tier is restored by a neural model when the card is
-        scanned, and no card ever gets dots smaller than ${MODULE_FLOOR_MM.toFixed(2)}mm — a tier that
-        would is simply unavailable until the clip is trimmed. Preview any tier to hear the card.</p>
+      <p class="hint" style="margin-top:0">Best fills the card with as much voice detail as it can
+        hold — the shorter the clip, the more detail. No card ever gets dots smaller than
+        ${MODULE_FLOOR_MM.toFixed(2)}mm. Preview a tier to hear exactly what a scan will play.</p>
       <div class="tiers" id="tiers"></div>
     </div>
 
@@ -150,8 +164,8 @@ export function mountGenerator(root: HTMLElement): void {
 
     <footer>
       Audio is compressed entirely in your browser with
-      <a href="https://github.com/google/lyra" target="_blank" rel="noreferrer">Lyra</a>
-      (<a href="lyra/NOTICE.md" target="_blank">notices</a>) or
+      <a href="https://huggingface.co/kyutai/mimi" target="_blank" rel="noreferrer">Mimi</a>
+      (<a href="mimi/NOTICE.md" target="_blank">CC-BY-4.0 notice</a>) or
       <a href="https://github.com/drowe67/codec2" target="_blank" rel="noreferrer">Codec 2</a>
       (<a href="codec2/NOTICE.md" target="_blank">LGPL 2.1 notice</a>).
       Card is 3.5″ × 2″. Engrave at the exact output size — do not rescale.
@@ -160,10 +174,9 @@ export function mountGenerator(root: HTMLElement): void {
   `;
 
   const $ = <T extends HTMLElement>(id: string): T => root.querySelector<T>(`#${id}`)!;
-  // Lyra (the "Best" tier) needs SharedArrayBuffer; when the page isn't
-  // cross-origin isolated (first-ever visit before the service worker kicks
-  // in, or an old browser) fall back to Codec 2 tiers only.
-  const lyraOk = lyraSupported();
+  // Mimi (the "Best" tier) runs on onnxruntime's wasm build; where that can't
+  // run, Codec 2 is the only rung.
+  const mimiOk = mimiSupported();
   const state: State = {
     pcm: null,
     trim: { startSec: 0, endSec: 0 },
@@ -175,6 +188,7 @@ export function mountGenerator(root: HTMLElement): void {
     recordedAt: todayIso(),
     cardId: randomCardId(),
     tier: null,
+    depth: 0,
     encoded: null,
     plan: null,
     renderInput: null,
@@ -194,8 +208,8 @@ export function mountGenerator(root: HTMLElement): void {
   let pcmEpoch = 0; // bumped when a new clip loads, invalidating the encode cache
   const encodeCache = new Map<string, EncodeEntry>();
 
-  function cacheKey(tier: Tier): string {
-    return `${tier.key}|${pcmEpoch}|${state.trim.startSec}|${state.trim.endSec}`;
+  function cacheKey(tier: Tier, depth: number): string {
+    return `${tier.key}|${depth}|${pcmEpoch}|${state.trim.startSec}|${state.trim.endSec}`;
   }
 
   function rememberEncode(key: string, entry: EncodeEntry): void {
@@ -243,10 +257,11 @@ export function mountGenerator(root: HTMLElement): void {
       state.cardId = randomCardId();
       pcmEpoch++;
       encodeCache.clear();
-      warmUpLyra();
-      // Previewing a tier runs the player's restoration, so start the 27 MB
-      // model download now rather than at the first click on ▶ Preview.
-      warmUpNeuralBwe();
+      // Start the download the preferred tier's card build needs now (Mimi's
+      // ~73 MB encoder, or the 27 MB restoration model a Basic preview plays
+      // through). Anything else loads when a preview or a fallback asks for it.
+      if (state.tierKey === 'best' && mimiOk) warmUpMimi('encoder');
+      else warmUpNeuralBwe();
       const label = fileName ? `${fileName} (${durationSec.toFixed(1)}s)` : `${durationSec.toFixed(1)}s loaded`;
       $('audio-status').textContent =
         label + (trimmed >= 0.3 ? ` (dropped ${trimmed.toFixed(1)}s of silence)` : '');
@@ -375,9 +390,9 @@ export function mountGenerator(root: HTMLElement): void {
       trimBtn: el.querySelector<HTMLButtonElement>('[data-trim]')!,
       status: el.querySelector<HTMLElement>('[data-status]')!,
     };
-    if (tier.codec === 'lyra' && !lyraOk) {
+    if (tier.codec === 'mimi' && !mimiOk) {
       el.setAttribute('aria-disabled', 'true');
-      el.title = 'This browser cannot run the Lyra codec.';
+      el.title = 'This browser cannot run the Mimi codec.';
     }
     const choose = (): void => {
       if (el.classList.contains('unavailable')) return; // trim it first
@@ -420,9 +435,33 @@ export function mountGenerator(root: HTMLElement): void {
    * fits it, the best fitting rung otherwise. */
   function effectiveTier(seconds: number): Tier {
     const pref = preferredTier();
-    const usable = pref.codec !== 'lyra' || lyraOk;
+    const usable = pref.codec !== 'mimi' || mimiOk;
     if (usable && tierFits(seconds, pref, cardSpec())) return pref;
-    return bestTierThatFits(seconds, cardSpec(), lyraOk);
+    return bestTierThatFits(seconds, cardSpec(), mimiOk);
+  }
+
+  /** Mimi codes per frame for this clip on this card (0 for Codec 2): the
+   * deepest stack that keeps the card above the module floor. */
+  function depthFor(tier: Tier): number {
+    if (tier.codec !== 'mimi') return 0;
+    return mimiDepthForFrames(clipFrames(), cardSpec()) ?? MIMI_MIN_DEPTH;
+  }
+
+  /** Mimi frames in the exact samples slicePcm will hand the encoder — not the
+   * trim duration, which can be a sample or two shorter and a frame fewer. */
+  function clipFrames(): number {
+    if (!state.pcm) return 0;
+    const a = Math.max(0, Math.floor(state.trim.startSec * PCM_SAMPLE_RATE));
+    const b = Math.min(state.pcm.length, Math.ceil(state.trim.endSec * PCM_SAMPLE_RATE));
+    return mimiFramesFor(b - a);
+  }
+
+  /** Bytes the card will actually carry — exact for Mimi (its depth is chosen
+   * per clip), the planner's one-frame-slack estimate for Codec 2. */
+  function payloadBytes(tier: Tier, seconds: number): number {
+    return tier.codec === 'mimi'
+      ? mimiPayloadBytes(clipFrames(), depthFor(tier))
+      : estimatePayloadBytes(seconds, tier);
   }
 
   /** Shrink the trim window to the longest clip this tier can hold, and adopt
@@ -451,11 +490,11 @@ export function mountGenerator(root: HTMLElement): void {
       }
     }
     const pref = preferredTier();
-    const prefUsable = pref.codec !== 'lyra' || lyraOk;
+    const prefUsable = pref.codec !== 'mimi' || mimiOk;
 
     for (const tile of tiles.values()) {
       const { tier } = tile;
-      const usable = tier.codec !== 'lyra' || lyraOk;
+      const usable = tier.codec !== 'mimi' || mimiOk;
       const maxSec = usable ? maxSecondsForTier(tier, spec) : 0;
       const fits = usable && (seconds === null || tierFits(seconds, tier, spec));
       const selected = effective !== null && effective.key === tier.key;
@@ -467,9 +506,10 @@ export function mountGenerator(root: HTMLElement): void {
       } else if (seconds === null) {
         tile.stats.textContent = `fits up to ${maxSec.toFixed(1)}s`;
       } else if (fits) {
-        const plan = planCard(estimatePayloadBytes(seconds, tier), spec);
+        const plan = planCard(payloadBytes(tier, seconds), spec);
+        const detail = tier.codec === 'mimi' ? ` · detail ${depthFor(tier)}/20` : '';
         tile.stats.textContent =
-          `${plan.chunkCount} codes · ${plan.moduleMm.toFixed(2)}mm dots · fits up to ${maxSec.toFixed(1)}s`;
+          `${plan.chunkCount} codes · ${plan.moduleMm.toFixed(2)}mm dots${detail} · fits up to ${maxSec.toFixed(1)}s`;
       } else {
         tile.stats.textContent = `needs ≤ ${maxSec.toFixed(1)}s — this clip is ${seconds.toFixed(1)}s`;
       }
@@ -527,18 +567,24 @@ export function mountGenerator(root: HTMLElement): void {
       if (seq === previewSeq) tile.status.textContent = msg;
     };
     try {
-      const key = cacheKey(tier);
+      const depth = depthFor(tier);
+      const key = cacheKey(tier, depth);
       const cached = encodeCache.get(key);
       let restored = cached?.restored;
       if (!restored) {
         if (cached?.bytes) {
           // The card pipeline already paid for this encode; only the playback
           // side is missing.
-          restored = await decodeForPlayback(tier.wireVersion, tier.modeId, cached.bytes, setStatus);
+          restored = await decodeForPlayback(
+            tier.wireVersion,
+            modeIdForTier(tier, depth),
+            cached.bytes,
+            setStatus,
+          );
           rememberEncode(key, { bytes: cached.bytes, restored });
         } else {
           const slice = slicePcm(state.pcm, state.trim.startSec, state.trim.endSec);
-          const result = await previewForTier(tier, slice, setStatus);
+          const result = await previewForTier(tier, slice, depth, setStatus);
           restored = {
             pcm: result.pcm,
             sampleRate: result.sampleRate,
@@ -618,22 +664,29 @@ export function mountGenerator(root: HTMLElement): void {
     try {
       const seconds = state.trim.endSec - state.trim.startSec;
       const tier = effectiveTier(seconds);
-      // Encoding depends only on the clip, trim window, and tier — reuse the
-      // last result when only card options (text line, invert) changed, so
-      // typing a caption doesn't re-run neural-codec inference per keystroke.
-      const key = cacheKey(tier);
+      const depth = depthFor(tier);
+      // Encoding depends only on the clip, trim window, tier, and depth —
+      // reuse the last result when only card options (text line, invert)
+      // changed, so typing a caption doesn't re-run neural-codec inference per
+      // keystroke.
+      const key = cacheKey(tier, depth);
       let encoded = encodeCache.get(key)?.bytes;
       if (!encoded) {
         const pcm = slicePcm(state.pcm, state.trim.startSec, state.trim.endSec);
-        encoded = await encodeForTier(tier, pcm);
+        encoded = await encodeForTier(tier, pcm, depth);
         if (seq !== encodeSeq) return; // superseded
         rememberEncode(key, { bytes: encoded });
       }
       const plan = planCard(encoded.length, cardSpec());
+      // The tier and depth were chosen to clear the floor; this is the
+      // guarantee, checked against the bytes the codec really produced.
+      if (plan.moduleMm < MODULE_FLOOR_MM) {
+        throw new Error('This clip came out too large for a scannable card — trim it a little shorter.');
+      }
       const chunks = splitPayload(
         encoded,
         tier.wireVersion,
-        tier.modeId,
+        modeIdForTier(tier, depth),
         plan.payloadPerChunk,
         state.cardId,
       );
@@ -646,6 +699,7 @@ export function mountGenerator(root: HTMLElement): void {
         texture: state.textured ? { seed: state.cardId } : undefined,
       };
       state.tier = tier;
+      state.depth = depth;
       state.encoded = encoded;
       state.plan = plan;
       state.renderInput = renderInput;
@@ -664,7 +718,13 @@ export function mountGenerator(root: HTMLElement): void {
       renderPreview();
     } catch (e) {
       if (seq === encodeSeq) {
-        setError(e instanceof Error ? e.message : 'Something went wrong while building the card.');
+        setError(
+          e instanceof MimiTimeoutError || e instanceof MimiDownloadError
+            ? "The Best voice model couldn't run here just now — pick Basic to build the card on this device, or try another browser."
+            : e instanceof Error
+              ? e.message
+              : 'Something went wrong while building the card.',
+        );
       }
     }
   }
@@ -703,13 +763,16 @@ export function mountGenerator(root: HTMLElement): void {
   }
 
   function updateStatsLine(): void {
-    const { plan, renderInput, tier, encoded } = state;
+    const { plan, renderInput, tier, encoded, depth } = state;
     if (!plan || !renderInput || !tier || !encoded) return;
     const seconds = state.trim.endSec - state.trim.startSec;
-    const codecLabel = tier.codec === 'lyra' ? 'Lyra 3.2 kbps' : `Codec 2 ${tier.mode}`;
+    const codecLabel =
+      tier.codec === 'mimi'
+        ? `Mimi ${((depth * MIMI_CODE_BITS * MIMI_FRAME_RATE) / 1000).toFixed(2)} kbps (${depth} codes/frame)`
+        : `Codec 2 ${tier.mode}`;
     // Once the maker has previewed this exact card we know which restoration
     // their device managed — worth saying, since it is what a scanner hears.
-    const restoration = encodeCache.get(cacheKey(tier))?.restored?.restoration;
+    const restoration = encodeCache.get(cacheKey(tier, depth))?.restored?.restoration;
     const restoreLabel =
       restoration === 'neural'
         ? ' (neural restoration)'
