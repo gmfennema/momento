@@ -1,17 +1,24 @@
-// Service worker: offline precaching (as before, via Workbox) plus
-// cross-origin-isolation headers for GitHub Pages.
+// Service worker: offline precaching (via Workbox) plus cross-origin-isolation
+// headers for GitHub Pages.
 //
-// The Lyra codec needs SharedArrayBuffer, which browsers only expose on
-// cross-origin isolated pages (COOP + COEP response headers). GitHub Pages
-// cannot set headers, but a service worker may rewrite the responses it
-// serves — the standard "coi-serviceworker" trick. Document responses get the
-// two headers injected here; main.ts reloads the page once when the worker
+// Threaded wasm (Lyra, and onnxruntime for Mimi and the neural restorer) needs
+// SharedArrayBuffer, which browsers only expose on cross-origin isolated pages
+// (COOP + COEP response headers). GitHub Pages cannot set headers, but a
+// service worker may rewrite the responses it serves — the standard
+// "coi-serviceworker" trick. main.ts reloads the page once when the worker
 // first takes control so the very first visit gets isolated too.
+//
+// Every same-origin response gets the headers, not just the page: an isolated
+// page may only start a worker whose own script is served with COEP, so a
+// document-only rewrite isolates the page and then breaks every worker it
+// starts — onnxruntime's included ("no available backend found"), which took
+// out Mimi playback on every visit after the first.
 /// <reference lib="webworker" />
 import {
   cleanupOutdatedCaches,
   getCacheKeyForURL,
-  precacheAndRoute,
+  matchPrecache,
+  precache,
   type PrecacheEntry,
 } from 'workbox-precaching';
 
@@ -30,54 +37,43 @@ function withCoiHeaders(res: Response): Response {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
-// Handle navigations ourselves so the document response always carries the
-// isolation headers. The precached shell is served directly (matching the old
-// generateSW navigateFallback behavior — instant load offline and on flaky
-// networks); shell updates arrive through new service worker versions.
-// Subresources fall through to the Workbox precache routes registered below.
 // The neural assets (~27 MB of enhancer models in bwe/, ~130 MB of Mimi codec
 // models in mimi/, ~13 MB of onnxruntime wasm in ort/) are far beyond the
-// precache size limit, so they
-// are cached on first use instead: cache-first keeps replays instant and
-// offline-capable without making every visitor download them up front.
+// precache size limit, so they are cached on first use instead: cache-first
+// keeps replays instant and offline-capable without making every visitor
+// download them up front.
 const HEAVY_CACHE = 'momento-heavy-v1';
 const HEAVY_PATH = /\/(bwe|mimi|ort)\/[^/]+\.(onnx|wasm)$/;
 
-self.addEventListener('fetch', (event) => {
-  const url = new URL(event.request.url);
-  if (
-    event.request.method === 'GET' &&
-    url.origin === self.location.origin &&
-    HEAVY_PATH.test(url.pathname)
-  ) {
-    event.respondWith(
-      (async () => {
-        const cache = await caches.open(HEAVY_CACHE);
-        const hit = await cache.match(event.request);
-        if (hit) return hit;
-        const res = await fetch(event.request);
-        if (res.ok) void cache.put(event.request, res.clone());
-        return res;
-      })(),
-    );
-  }
-});
+async function heavy(request: Request): Promise<Response> {
+  const cache = await caches.open(HEAVY_CACHE);
+  const hit = await cache.match(request);
+  if (hit) return hit;
+  const res = await fetch(request);
+  if (res.ok) void cache.put(request, res.clone());
+  return res;
+}
+
+// Navigations get the precached shell directly (instant load offline and on
+// flaky networks); shell updates arrive through new service worker versions.
+async function shell(request: Request): Promise<Response> {
+  const shellKey = getCacheKeyForURL('index.html');
+  const cached = shellKey ? await caches.match(shellKey) : undefined;
+  return cached ?? fetch(request);
+}
+
+async function serve(request: Request, url: URL): Promise<Response> {
+  if (request.mode === 'navigate') return shell(request);
+  if (HEAVY_PATH.test(url.pathname)) return heavy(request);
+  return (await matchPrecache(request)) ?? fetch(request);
+}
 
 self.addEventListener('fetch', (event) => {
-  if (event.request.mode !== 'navigate') return;
-  event.respondWith(
-    (async () => {
-      const shellKey = getCacheKeyForURL('index.html');
-      const shell = shellKey && (await caches.match(shellKey));
-      if (shell) return withCoiHeaders(shell);
-      try {
-        return withCoiHeaders(await fetch(event.request));
-      } catch {
-        return Response.error();
-      }
-    })(),
-  );
+  const { request } = event;
+  const url = new URL(request.url);
+  if (request.method !== 'GET' || url.origin !== self.location.origin) return;
+  event.respondWith(serve(request, url).then(withCoiHeaders, () => Response.error()));
 });
 
 cleanupOutdatedCaches();
-precacheAndRoute(self.__WB_MANIFEST);
+precache(self.__WB_MANIFEST);

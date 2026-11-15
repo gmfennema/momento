@@ -166,7 +166,7 @@ npm install        # also copies the zxing + lyra wasm into public/
 npm run dev        # generator at /, player at /#p
 npm test           # unit + full-pipeline tests (node)
 npm run build      # typecheck + production build (base path /momento/)
-npm run e2e        # Playwright smoke test against vite preview
+npm run e2e        # Playwright, against vite preview and a GitHub-Pages-like server (build first)
 ```
 
 The keystone test (`tests/e2e-card.test.ts`) proves the whole physical
@@ -175,8 +175,10 @@ the image with zxing → reassemble → decode → audio again, for every tier a
 the inverted variant, plus a degraded 900 px "phone photo" of a full 10 s card
 for both rungs. `tests/mimi.test.ts` runs the shipped Mimi models through
 onnxruntime-web in node, and the Playwright suite runs the full
-encode→card→photo→decode loop in a browser. `scripts/mimi/` rebuilds the
-models.
+encode→card→photo→decode loop in a browser. `e2e/pages.spec.ts` runs that
+loop the way GitHub Pages serves the site, with no isolation headers from the
+server, so the service worker has to supply them (`vite preview` sends them
+itself and would hide a gap). `scripts/mimi/` rebuilds the models.
 
 ## Deploying
 
