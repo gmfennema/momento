@@ -367,6 +367,11 @@ canvas.waveform {
   color: var(--muted);
 }
 
+.options .hint {
+  flex-basis: 100%;
+}
+
+.options select,
 .options input[type='text'],
 .options input[type='date'] {
   font: inherit;

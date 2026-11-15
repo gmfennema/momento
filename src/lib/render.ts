@@ -39,7 +39,20 @@ export interface RenderInput {
   entryLabel?: string;
   /** fill the card with a module-aligned pixel field around the codes */
   texture?: TextureOptions;
+  /** How far the laser burns past the edge of what it is told to engrave, in
+   * mm per edge. An engraved area always comes out a little larger than drawn,
+   * and at a third of a millimetre per dot that is enough to starve every dot
+   * of the other colour (a real card measured ~0.08 mm, leaving isolated dots
+   * at half size — and no code on it readable). The code shapes are drawn
+   * this much smaller where they are engraved, larger where they are the
+   * un-engraved knock-outs of an inverted card, so they leave the engraver at
+   * their true size. */
+  burnMm?: number;
 }
+
+/** Laser over-burn the generator compensates for unless told otherwise — the
+ * figure measured off a real engraved card (see RenderInput.burnMm). */
+export const DEFAULT_BURN_MM = 0.08;
 
 /** fraction of the entry cell reserved for the "scan me" label strip */
 const ENTRY_LABEL_FRACTION = 0.2;
@@ -124,25 +137,58 @@ function placeSymbols(input: RenderInput): { symbols: PlacedSymbol[]; entryGeom:
   return { symbols, entryGeom };
 }
 
-/** Merge each matrix row's dark runs into rects; returns [x, y, w, h] in mm. */
-function symbolRects(s: PlacedSymbol): Array<[number, number, number, number]> {
+/** How much the drawn module shapes grow (+) or shrink (−) per edge to cancel
+ * the engraver's over-burn. The shapes are the engraved area on a plain card
+ * (so they shrink) and the un-engraved knock-outs on an inverted one (so they
+ * grow). Capped so the other colour always keeps 40% of a module. */
+function moduleGrowMm(input: RenderInput, s: PlacedSymbol): number {
+  const burn = Math.max(0, input.burnMm ?? 0);
+  const cap = (s.sizeMm / s.matrix.size) * 0.3;
+  return Math.min(burn, cap) * (input.inverted ? 1 : -1);
+}
+
+/**
+ * Merge each matrix row's dark runs into rects; returns [x, y, w, h] in mm.
+ *
+ * `growMm` moves every edge between a dark and a light module: outward (the
+ * rects simply overlap their neighbours) or, when negative, inward. Shrinking
+ * is the dark area eroded by a square: each run keeps a core inset on all four
+ * sides, and runs that touch across a row boundary get a connector over the
+ * columns they share, so only true dark/light edges move.
+ */
+export function symbolRects(
+  s: Pick<PlacedSymbol, 'matrix' | 'xMm' | 'yMm' | 'sizeMm'>,
+  growMm = 0,
+): Array<[number, number, number, number]> {
   const rects: Array<[number, number, number, number]> = [];
   const module = s.sizeMm / s.matrix.size;
+  const g = growMm;
+  let above: Array<[number, number]> = [];
   for (let row = 0; row < s.matrix.size; row++) {
+    const runs: Array<[number, number]> = [];
     let runStart = -1;
     for (let col = 0; col <= s.matrix.size; col++) {
       const dark = col < s.matrix.size && s.matrix.get(row, col);
       if (dark && runStart === -1) runStart = col;
       if (!dark && runStart !== -1) {
-        rects.push([
-          s.xMm + runStart * module,
-          s.yMm + row * module,
-          (col - runStart) * module,
-          module,
-        ]);
+        runs.push([runStart, col]);
         runStart = -1;
       }
     }
+    const y = s.yMm + row * module;
+    for (const [a, b] of runs) {
+      rects.push([s.xMm + a * module - g, y - g, (b - a) * module + 2 * g, module + 2 * g]);
+    }
+    if (g < 0) {
+      for (const [a, b] of runs) {
+        for (const [c, d] of above) {
+          const lo = Math.max(a, c);
+          const hi = Math.min(b, d);
+          if (hi > lo) rects.push([s.xMm + lo * module - g, y + g, (hi - lo) * module + 2 * g, -2 * g]);
+        }
+      }
+    }
+    above = runs;
   }
   return rects;
 }
@@ -262,7 +308,7 @@ export function renderSvg(input: RenderInput): string {
     // Slight overlap (2% of a module) between vertically adjacent rects kills
     // hairline gaps in rasterizers and laser software.
     const bleed = (s.sizeMm / s.matrix.size) * 0.02;
-    const d = symbolRects(s)
+    const d = symbolRects(s, moduleGrowMm(input, s))
       .map(
         ([x, y, w, h]) =>
           `M${fmt(x)} ${fmt(y)}h${fmt(w)}v${fmt(h + bleed)}h${fmt(-w)}z`,
@@ -334,6 +380,16 @@ export function drawCard(
   ctx.fillStyle = fg;
 
   for (const s of symbols) {
+    const grow = moduleGrowMm(input, s);
+    if (grow !== 0) {
+      // Compensated shapes no longer sit on the module grid; snap each edge.
+      for (const [x, y, w, h] of symbolRects(s, grow)) {
+        const px = Math.round(x * pxPerMm);
+        const py = Math.round(y * pxPerMm);
+        ctx.fillRect(px, py, Math.round((x + w) * pxPerMm) - px, Math.round((y + h) * pxPerMm) - py);
+      }
+      continue;
+    }
     // Integer-aligned module grid: distribute pixels so edges stay crisp.
     const x0 = s.xMm * pxPerMm;
     const y0 = s.yMm * pxPerMm;

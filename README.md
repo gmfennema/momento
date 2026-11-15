@@ -146,8 +146,18 @@ without it, single-threaded.
   only the QR codes flip: each becomes a dark plate (code + quiet zone) with
   the modules knocked out, so the laser engraves just the code tiles and the
   unburned modules stay dark. The scanner reads inverted codes natively.
+- **Laser over-burn.** A laser burns a little wider than the artwork, so the
+  engraved colour comes out fat and the other one thin. At 0.33 mm a dot,
+  ~0.1 mm of that is enough that a phone finds every code and fails each one's
+  checksum (a real black card did exactly this: 1 code of 7). The generator
+  draws the codes to cancel it — 0.08 mm per edge by default, readable in
+  simulation from a perfect engraver up to 0.16 mm of over-burn. If the dots
+  your engraver leaves still look thinner than the gaps between them, raise
+  the setting; if fatter, lower it. The player also re-reads each frame with
+  the thin colour thickened, which is what rescues cards made before this.
 - High contrast and crisp edges matter more than depth. Test-scan a printout
-  before burning a card.
+  before burning a card — and scan metal cards in soft, even light: a
+  reflection across a code hides it.
 
 ## Development
 

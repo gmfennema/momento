@@ -52,7 +52,7 @@ import {
   renderFrontSvg,
   type FrontInput,
 } from '../lib/front';
-import { cardTexture, drawCard, renderSvg, type RenderInput } from '../lib/render';
+import { cardTexture, DEFAULT_BURN_MM, drawCard, renderSvg, type RenderInput } from '../lib/render';
 import { brandHeader } from '../lib/brand';
 import { startRecording, type RecorderHandle } from './recorder';
 import { attachTrim, type TrimHandle, type TrimState } from './trim';
@@ -73,6 +73,8 @@ interface State {
   tierKey: Tier['key'];
   inverted: boolean;
   textured: boolean;
+  /** laser over-burn the artwork compensates for, mm per edge */
+  burnMm: number;
   textLine: string;
   voice: string;
   recordedAt: string; // 'YYYY-MM-DD' (front metadata line), '' if cleared
@@ -135,6 +137,17 @@ export function mountGenerator(root: HTMLElement): void {
       <div class="options">
         <label><input type="checkbox" id="texture-toggle" checked /> Bury the codes in a pixel field (edge-to-edge texture)</label>
         <label><input type="checkbox" id="invert-toggle" /> Invert QR codes for black cards (background stays white)</label>
+        <label>Laser over-burn
+          <select id="burn-select">
+            <option value="0">None — dots exactly as drawn</option>
+            <option value="0.04">Fine beam · 0.04 mm</option>
+            <option value="0.08" selected>Typical · 0.08 mm</option>
+            <option value="0.12">Wide beam · 0.12 mm</option>
+          </select>
+        </label>
+        <p class="hint" style="margin:0">A laser burns slightly wider than the artwork, which thins the
+          dots it leaves behind until phones can't read them. The card is drawn to cancel that out —
+          if your engraved dots still look thin next to the gaps between them, go up a step.</p>
         <label>Name line (front) <input type="text" id="text-line" placeholder="optional" maxlength="40" /></label>
         <label>Voice <input type="text" id="voice-line" placeholder="e.g. Emma" maxlength="24" /></label>
         <label>Recorded <input type="date" id="recorded-date" /></label>
@@ -183,6 +196,7 @@ export function mountGenerator(root: HTMLElement): void {
     tierKey: 'best',
     inverted: false,
     textured: true,
+    burnMm: DEFAULT_BURN_MM,
     textLine: '',
     voice: '',
     recordedAt: todayIso(),
@@ -626,6 +640,10 @@ export function mountGenerator(root: HTMLElement): void {
     state.inverted = (e.target as HTMLInputElement).checked;
     scheduleUpdate();
   });
+  $<HTMLSelectElement>('burn-select').addEventListener('change', (e) => {
+    state.burnMm = Number((e.target as HTMLSelectElement).value);
+    scheduleUpdate();
+  });
   $<HTMLInputElement>('texture-toggle').addEventListener('change', (e) => {
     state.textured = (e.target as HTMLInputElement).checked;
     scheduleUpdate();
@@ -695,6 +713,7 @@ export function mountGenerator(root: HTMLElement): void {
         matrices: chunks.map((c) => chunkMatrix(c, plan.qrVersion)),
         entry: entryMatrix(playerUrl()),
         inverted: state.inverted,
+        burnMm: state.burnMm,
         // Seeded by card id so the preview, PNG, and SVG are the same field.
         texture: state.textured ? { seed: state.cardId } : undefined,
       };
