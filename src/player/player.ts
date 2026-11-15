@@ -282,6 +282,9 @@ export function mountPlayer(root: HTMLElement): void {
       clearStashedCard();
       showReady();
     } catch (e) {
+      // The screens below are deliberately plain; the console keeps the cause
+      // for anyone debugging a phone over USB.
+      console.error('Momento: could not rebuild the audio', e);
       clearStashedCard(); // the timeout branch below re-stashes; nothing else should resume
       if (e instanceof UnknownLyraModeError) {
         // A reserved Lyra mode from a future generator — decoding it as
