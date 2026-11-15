@@ -30,16 +30,16 @@ function y4mOfWindow(png: PNG, x0: number, y0: number, w: number, h: number): Bu
 
 test('player: live scan reads a code, coaches a stalled scan, and a photo finishes the card', async ({ page }) => {
   test.setTimeout(180_000);
-  // A full-length card: seven data codes at the densest layout the planner allows.
+  // A full-length card on a metal blank: five data codes in a 3 × 2 grid.
   await page.goto('/momento/');
   await page.setInputFiles('#file-input', { name: 'clip.wav', mimeType: 'audio/wav', buffer: wavFixture(10) });
-  await expect(page.locator('#stats-line')).toContainText('7 data codes', { timeout: 60_000 });
+  await expect(page.locator('#stats-line')).toContainText('5 data codes', { timeout: 60_000 });
   const dataUrl = await page.locator('#card-preview').evaluate((c: HTMLCanvasElement) => c.toDataURL('image/png'));
   const cardPng = Buffer.from(dataUrl.split(',')[1]!, 'base64');
   const card = PNG.sync.read(cardPng);
 
-  // The bottom-right 40% × 52% of the card holds exactly one whole data code.
-  const w = Math.floor((card.width * 0.4) / 2) * 2;
+  // The bottom-right 36% × 52% of the card holds exactly one whole data code.
+  const w = Math.floor((card.width * 0.36) / 2) * 2;
   const h = Math.floor((card.height * 0.52) / 2) * 2;
   const feed = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'momento-cam-')), 'one-code.y4m');
   fs.writeFileSync(feed, y4mOfWindow(card, card.width - w, card.height - h, w, h));
@@ -56,14 +56,14 @@ test('player: live scan reads a code, coaches a stalled scan, and a photo finish
     const cam = await browser.newPage();
     await cam.goto(`${BASE}#p`);
     await cam.click('#start');
-    await expect(cam.locator('#count')).toHaveText('1 of 7', { timeout: 30_000 });
+    await expect(cam.locator('#count')).toHaveText('1 of 5', { timeout: 30_000 });
     // Nothing else is ever in view — the coach changes its advice.
     await expect(cam.locator('#coach')).toContainText('take a photo', { timeout: 20_000 });
 
     // The photo route keeps the square already read and opens the picker.
     const chooser = cam.waitForEvent('filechooser');
     await cam.click('#photo');
-    await expect(cam.locator('#count')).toHaveText('1 of 7');
+    await expect(cam.locator('#count')).toHaveText('1 of 5');
     await (await chooser).setFiles({ name: 'card.png', mimeType: 'image/png', buffer: cardPng });
     await expect(cam.locator('#play')).toBeVisible({ timeout: 60_000 });
     await expect(cam.locator('#stage')).toContainText('rebuilt entirely from the card');

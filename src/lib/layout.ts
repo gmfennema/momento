@@ -14,9 +14,32 @@ import {
 } from './chunk';
 import { MIMI_CODE_BITS, MIMI_FRAME_RATE, mimiPayloadBytes } from './mimi';
 
-/** Standard US business card. */
-export const CARD_W_MM = 88.9;
-export const CARD_H_MM = 50.8;
+/** Card blanks the generator lays out for. They differ in shape, not just
+ * size, so artwork for one can't be scaled onto the other: 3.5″ × 2″ art shrunk
+ * to fit a metal card's width leaves bare bands top and bottom, and dots
+ * smaller than the floor. */
+export const CARD_SIZES = {
+  /** ISO/IEC 7810 ID-1 ("CR80", credit-card size): what metal business cards
+   * almost always are. Corners are rounded to 3.18 mm. */
+  metal: {
+    label: 'Metal card · 85.6 × 54 mm (credit-card size)',
+    widthMm: 85.6,
+    heightMm: 53.98,
+    cornerMm: 3.18,
+  },
+  /** The US paper business card. */
+  paper: {
+    label: 'Paper business card · 3.5″ × 2″',
+    widthMm: 88.9,
+    heightMm: 50.8,
+    cornerMm: 0,
+  },
+} as const;
+export type CardSizeKey = keyof typeof CARD_SIZES;
+export const DEFAULT_CARD_SIZE: CardSizeKey = 'metal';
+
+export const CARD_W_MM = CARD_SIZES[DEFAULT_CARD_SIZE].widthMm;
+export const CARD_H_MM = CARD_SIZES[DEFAULT_CARD_SIZE].heightMm;
 
 /** QR byte-mode capacity at ECC level L, versions 1..20 (ISO/IEC 18004). */
 const BYTE_CAPACITY_L = [

@@ -62,7 +62,7 @@ test('player: reads a card whose dots the laser burned thin', async ({ page }) =
   test.setTimeout(120_000);
   await page.goto('/momento/');
   await page.setInputFiles('#file-input', { name: 'clip.wav', mimeType: 'audio/wav', buffer: wavFixture(10) });
-  await expect(page.locator('#stats-line')).toContainText('7 data codes', { timeout: 60_000 });
+  await expect(page.locator('#stats-line')).toContainText('5 data codes', { timeout: 60_000 });
   const preview = (): Promise<string> =>
     page.locator('#card-preview').evaluate((c: HTMLCanvasElement) => c.toDataURL('image/png'));
 

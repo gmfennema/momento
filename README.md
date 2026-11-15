@@ -1,7 +1,8 @@
 # Momento — audio that lives on a business card
 
 Momento turns up to **10 seconds of audio** into a grid of QR codes sized for a
-standard **3.5″ × 2″ business card**, ready for laser engraving. Scanning the
+business card, ready for laser engraving: a **metal card (85.6 × 54 mm,
+credit-card size)** by default, or a **3.5″ × 2″ paper card**. Scanning the
 card's entry code opens this site, which then reads every code on the card with
 the phone camera and plays the sound back.
 
@@ -92,10 +93,14 @@ cards' Base45 codes still read.
 
 **No card is ever laid out below 0.32 mm modules.** That is a hard floor, not a
 warning: the generator reports the physical module (dot) size live, and a tier
-whose card would fall under the floor is simply *unavailable*. On a standard
+whose card would fall under the floor is simply *unavailable*. On a 3.5″ × 2″
 card the floor also holds the data codes at QR version 10 or lower (≤ 57
 modules a side), which matters as much as the millimetres: every extra version
-is 4 more modules the camera must resolve across the same symbol.
+is 4 more modules the camera must resolve across the same symbol. The taller
+metal card fits a 3 × 2 grid of larger codes at the same dot size (up to
+version 13), which holds more: a full 10 s clip gets 12 Mimi codes a frame
+instead of 10. In the simulated-engraving tests (`tests/burn.test.ts`) both
+layouts read every code across 0–0.16 mm of over-burn.
 
 Each tile also has a **▶ Preview** button (and the card panel a **▶ Hear this
 card**). Preview runs the *player's* pipeline — encode, decode, restoration and
@@ -136,7 +141,12 @@ without it, single-threaded.
 
 ## Engraving notes
 
-- Engrave the output at **exactly 3.5″ × 2″ (88.9 × 50.8 mm)** — do not rescale.
+- Pick the **card size** that matches your blank. Metal cards are almost always
+  85.6 × 54 mm (credit-card size), not 3.5″ × 2″; the two are different
+  shapes, so artwork for one can't be scaled onto the other.
+- Engrave the output at **exactly card size, 100%** — do not rescale. The SVG
+  is sized in millimetres and the PNG records its 1200 dpi, so both import at
+  the right size.
 - Prefer the **SVG** for laser software; the PNG is 1200 dpi if you need raster.
   With the textured back, the field is thousands of small cells — if your laser
   software struggles with the shape count, engrave the 1200 dpi PNG in raster

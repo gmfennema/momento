@@ -25,6 +25,8 @@ import { preparePcm } from '../lib/preprocess';
 import { randomCardId, splitPayload } from '../lib/chunk';
 import {
   bestTierThatFits,
+  CARD_SIZES,
+  DEFAULT_CARD_SIZE,
   estimatePayloadBytes,
   maxSecondsForTier,
   MIMI_MIN_DEPTH,
@@ -34,9 +36,11 @@ import {
   tierFits,
   TIERS,
   type CardPlan,
+  type CardSizeKey,
   type CardSpec,
   type Tier,
 } from '../lib/layout';
+import { pngWithDpi } from '../lib/png';
 import {
   decodeForPlayback,
   encodeForTier,
@@ -71,6 +75,8 @@ interface State {
    * next best fitting tier otherwise — nothing below the module floor is ever
    * built, so a preference can be aspirational without producing a bad card. */
   tierKey: Tier['key'];
+  /** the blank being engraved — sets the artwork's size and shape */
+  cardSize: CardSizeKey;
   inverted: boolean;
   textured: boolean;
   /** laser over-burn the artwork compensates for, mm per edge */
@@ -135,6 +141,16 @@ export function mountGenerator(root: HTMLElement): void {
     <div class="panel">
       <h2>03 · The card</h2>
       <div class="options">
+        <label>Card size
+          <select id="size-select">
+            ${(Object.keys(CARD_SIZES) as CardSizeKey[])
+              .map((k) => `<option value="${k}"${k === DEFAULT_CARD_SIZE ? ' selected' : ''}>${CARD_SIZES[k].label}</option>`)
+              .join('')}
+          </select>
+        </label>
+        <p class="hint" style="margin:0">Pick the blank you'll engrave — the two are different shapes,
+          so one can't be scaled onto the other. Downloads come out exactly card size: engrave them at
+          100%, never scaled to fit.</p>
         <label><input type="checkbox" id="texture-toggle" checked /> Bury the codes in a pixel field (edge-to-edge texture)</label>
         <label><input type="checkbox" id="invert-toggle" /> Invert QR codes for black cards (background stays white)</label>
         <label>Laser over-burn
@@ -181,7 +197,7 @@ export function mountGenerator(root: HTMLElement): void {
       (<a href="mimi/NOTICE.md" target="_blank">CC-BY-4.0 notice</a>) or
       <a href="https://github.com/drowe67/codec2" target="_blank" rel="noreferrer">Codec 2</a>
       (<a href="codec2/NOTICE.md" target="_blank">LGPL 2.1 notice</a>).
-      Card is 3.5″ × 2″. Engrave at the exact output size — do not rescale.
+      Downloads are exactly card size — engrave at 100%, do not rescale.
       · <a href="#p">Scan a card</a>
     </footer>
   `;
@@ -194,6 +210,7 @@ export function mountGenerator(root: HTMLElement): void {
     pcm: null,
     trim: { startSec: 0, endSec: 0 },
     tierKey: 'best',
+    cardSize: DEFAULT_CARD_SIZE,
     inverted: false,
     textured: true,
     burnMm: DEFAULT_BURN_MM,
@@ -438,7 +455,8 @@ export function mountGenerator(root: HTMLElement): void {
   // codes out differently), a tier could be offered whose final plan renders
   // below the scannability floor.
   function cardSpec(): CardSpec {
-    return { inverted: state.inverted, textured: state.textured };
+    const { widthMm, heightMm } = CARD_SIZES[state.cardSize];
+    return { widthMm, heightMm, inverted: state.inverted, textured: state.textured };
   }
 
   function preferredTier(): Tier {
@@ -636,6 +654,10 @@ export function mountGenerator(root: HTMLElement): void {
 
   // --- options ---
 
+  $<HTMLSelectElement>('size-select').addEventListener('change', (e) => {
+    state.cardSize = (e.target as HTMLSelectElement).value as CardSizeKey;
+    scheduleUpdate();
+  });
   $<HTMLInputElement>('invert-toggle').addEventListener('change', (e) => {
     state.inverted = (e.target as HTMLInputElement).checked;
     scheduleUpdate();
@@ -733,6 +755,8 @@ export function mountGenerator(root: HTMLElement): void {
         voice: state.voice.trim() || undefined,
         recordedAt: state.recordedAt || undefined,
         durationSec: seconds,
+        widthMm: plan.widthMm,
+        heightMm: plan.heightMm,
       };
       renderPreview();
     } catch (e) {
@@ -758,13 +782,19 @@ export function mountGenerator(root: HTMLElement): void {
     canvas.width = Math.round(plan.widthMm * previewPxPerMm * 2);
     canvas.height = Math.round(plan.heightMm * previewPxPerMm * 2);
     drawCard(canvas.getContext('2d')!, renderInput, previewPxPerMm * 2);
-
+    const front = $<HTMLCanvasElement>('front-preview');
     if (state.frontInput) {
-      const front = $<HTMLCanvasElement>('front-preview');
       front.width = canvas.width;
       front.height = canvas.height;
       drawFront(front.getContext('2d')!, state.frontInput, previewPxPerMm * 2);
     }
+    // Round the preview's corners like the blank's, so what the corners cut
+    // off is visible before engraving (square blanks keep the stylesheet's).
+    const corner = CARD_SIZES[state.cardSize].cornerMm;
+    const radius = corner
+      ? `${((corner / plan.widthMm) * 100).toFixed(2)}% / ${((corner / plan.heightMm) * 100).toFixed(2)}%`
+      : '';
+    canvas.style.borderRadius = front.style.borderRadius = radius;
 
     updateStatsLine();
 
@@ -815,9 +845,7 @@ export function mountGenerator(root: HTMLElement): void {
     canvas.width = Math.round(plan.widthMm * PX_PER_MM);
     canvas.height = Math.round(plan.heightMm * PX_PER_MM);
     drawCard(canvas.getContext('2d')!, renderInput, PX_PER_MM);
-    canvas.toBlob((blob) => {
-      if (blob) downloadBlob(blob, 'momento-card-back.png');
-    }, 'image/png');
+    downloadPng(canvas, 'momento-card-back.png');
   });
 
   $('dl-svg').addEventListener('click', () => {
@@ -833,9 +861,7 @@ export function mountGenerator(root: HTMLElement): void {
     canvas.width = Math.round(plan.widthMm * PX_PER_MM);
     canvas.height = Math.round(plan.heightMm * PX_PER_MM);
     drawFront(canvas.getContext('2d')!, frontInput, PX_PER_MM);
-    canvas.toBlob((blob) => {
-      if (blob) downloadBlob(blob, 'momento-card-front.png');
-    }, 'image/png');
+    downloadPng(canvas, 'momento-card-front.png');
   });
 
   $('dl-front-svg').addEventListener('click', () => {
@@ -868,6 +894,18 @@ function playerUrl(): string {
   // Origin-agnostic: whatever host serves the generator also serves the player,
   // so a future custom domain needs no code change.
   return location.origin + location.pathname.replace(/index\.html$/, '') + '#p';
+}
+
+/** A canvas as a PNG that knows its physical size (PNG_DPI), so laser
+ * software imports it at exactly card size instead of guessing a DPI. */
+function downloadPng(canvas: HTMLCanvasElement, filename: string): void {
+  canvas.toBlob((blob) => {
+    if (!blob) return;
+    void blob.arrayBuffer().then((buf) => {
+      const png = pngWithDpi(new Uint8Array(buf), PNG_DPI);
+      downloadBlob(new Blob([png], { type: 'image/png' }), filename);
+    });
+  }, 'image/png');
 }
 
 function downloadBlob(blob: Blob, filename: string): void {

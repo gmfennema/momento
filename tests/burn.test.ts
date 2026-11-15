@@ -7,7 +7,7 @@ import { PNG } from 'pngjs';
 import { describe, expect, it } from 'vitest';
 import { prepareZXingModule, readBarcodes } from 'zxing-wasm/reader';
 import { mimiModeId, splitPayload } from '../src/lib/chunk';
-import { mimiDepthFor, planCard } from '../src/lib/layout';
+import { CARD_SIZES, mimiDepthFor, planCard, type CardSizeKey } from '../src/lib/layout';
 import { mimiPayloadBytes } from '../src/lib/mimi';
 import { chunkBytesFromScan, chunkMatrix, entryMatrix, type BitMatrix } from '../src/lib/qr';
 import { DEFAULT_BURN_MM, renderSvg, symbolRects } from '../src/lib/render';
@@ -111,8 +111,14 @@ describe('a compensated card through a real engraver', () => {
   const PX_PER_MM = 50;
   const PLAYER_URL = 'https://gmfennema.github.io/momento/#p';
 
-  async function chunksRead(inverted: boolean, burnMm: number, engraverMm: number): Promise<{ data: number; entry: boolean }> {
-    const spec = { inverted, textured: true };
+  async function chunksRead(
+    size: CardSizeKey,
+    inverted: boolean,
+    burnMm: number,
+    engraverMm: number,
+  ): Promise<{ data: number; total: number; entry: boolean }> {
+    const { widthMm, heightMm } = CARD_SIZES[size];
+    const spec = { inverted, textured: true, widthMm, heightMm };
     const depth = mimiDepthFor(10, spec)!;
     const bits = new Uint8Array(mimiPayloadBytes(125, depth)).map((_, i) => (i * 2654435761) >>> 24);
     const plan = planCard(bits.length, spec);
@@ -126,7 +132,7 @@ describe('a compensated card through a real engraver', () => {
       texture: { seed: 7 },
     });
     const png = PNG.sync.read(
-      Buffer.from(new Resvg(svg, { fitTo: { mode: 'width', value: Math.round(88.9 * PX_PER_MM) } }).render().asPng()),
+      Buffer.from(new Resvg(svg, { fitTo: { mode: 'width', value: Math.round(plan.widthMm * PX_PER_MM) } }).render().asPng()),
     );
     engrave(png, Math.round(engraverMm * PX_PER_MM));
     // 12.5 px/mm: the whole card across a 1080p frame.
@@ -138,22 +144,27 @@ describe('a compensated card through a real engraver', () => {
     });
     return {
       data: new Set(results.flatMap((r) => chunkBytesFromScan(r.text, r.bytes) ?? []).map((b) => b[4])).size,
+      total: plan.chunkCount,
       entry: results.some((r) => r.text === PLAYER_URL),
     };
   }
 
-  for (const inverted of [true, false]) {
-    const name = inverted ? 'inverted (black card)' : 'plain';
-    // From a perfect engraver to one burning twice as wide as assumed.
-    for (const engraverMm of [0, 0.08, 0.16]) {
-      it(`${name}: default compensation reads after ${engraverMm} mm of over-burn`, async () => {
-        expect(await chunksRead(inverted, DEFAULT_BURN_MM, engraverMm)).toEqual({ data: 7, entry: true });
+  for (const size of Object.keys(CARD_SIZES) as CardSizeKey[]) {
+    for (const inverted of [true, false]) {
+      const name = `${size}, ${inverted ? 'inverted (black card)' : 'plain'}`;
+      // From a perfect engraver to one burning twice as wide as assumed.
+      for (const engraverMm of [0, 0.08, 0.16]) {
+        it(`${name}: default compensation reads after ${engraverMm} mm of over-burn`, async () => {
+          const read = await chunksRead(size, inverted, DEFAULT_BURN_MM, engraverMm);
+          expect(read).toEqual({ data: read.total, total: read.total, entry: true });
+        }, 60_000);
+      }
+      it(`${name}: uncompensated artwork is lost at 0.12 mm of over-burn`, async () => {
+        // The failure this option exists for; if a reader upgrade ever makes
+        // this pass, the default deserves a fresh measurement.
+        const read = await chunksRead(size, inverted, 0, 0.12);
+        expect(read.data).toBeLessThan(read.total);
       }, 60_000);
     }
-    it(`${name}: uncompensated artwork is lost at 0.12 mm of over-burn`, async () => {
-      // The failure this option exists for; if a reader upgrade ever makes
-      // this pass, the default deserves a fresh measurement.
-      expect((await chunksRead(inverted, 0, 0.12)).data).toBeLessThan(7);
-    }, 60_000);
   }
 });
