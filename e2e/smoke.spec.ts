@@ -1,4 +1,6 @@
+import fs from 'node:fs';
 import { expect, test } from '@playwright/test';
+import { PNG } from 'pngjs';
 import { wavFixture } from './fixtures';
 
 test('page is cross-origin isolated so threaded wasm (Lyra playback, ort) can run', async ({ page }) => {
@@ -39,8 +41,19 @@ test('generator: upload → stats → card preview → downloads enabled', async
       h: c.height,
     }));
     expect(size.w).toBeGreaterThan(400);
-    expect(Math.abs(size.w / size.h - 88.9 / 50.8)).toBeLessThan(0.05);
+    // Metal blanks (85.6 × 54 mm) are the default shape.
+    expect(Math.abs(size.w / size.h - 85.6 / 53.98)).toBeLessThan(0.01);
   }
+
+  // The PNG is exactly card size at 1200 dpi, and says so, so laser software
+  // imports it at 100% instead of guessing a DPI and leaving it to be scaled.
+  const [pngDownload] = await Promise.all([page.waitForEvent('download'), page.click('#dl-png')]);
+  const pngBytes = fs.readFileSync((await pngDownload.path())!);
+  const png = PNG.sync.read(pngBytes);
+  expect(png.width).toBe(Math.round((85.6 * 1200) / 25.4));
+  expect(png.height).toBe(Math.round((53.98 * 1200) / 25.4));
+  expect(pngBytes.subarray(37, 41).toString('latin1')).toBe('pHYs'); // right after IHDR
+  expect(pngBytes.readUInt32BE(41)).toBe(47244); // px per metre = 1200 dpi
 
   // SVG downloads produce real card SVGs for both faces.
   const [backDownload] = await Promise.all([
@@ -53,6 +66,20 @@ test('generator: upload → stats → card preview → downloads enabled', async
     page.click('#dl-front-svg'),
   ]);
   expect(frontDownload.suggestedFilename()).toBe('momento-card-front.svg');
+});
+
+test('generator: the card size setting reshapes both faces', async ({ page }) => {
+  await page.goto('/momento/');
+  await page.setInputFiles('#file-input', { name: 'fixture.wav', mimeType: 'audio/wav', buffer: wavFixture() });
+  await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 20_000 });
+  const aspect = (id: string) => page.locator(id).evaluate((c: HTMLCanvasElement) => c.width / c.height);
+  await expect.poll(() => aspect('#card-preview'), { timeout: 30_000 }).toBeCloseTo(85.6 / 53.98, 2);
+  await page.selectOption('#size-select', 'paper');
+  await expect.poll(() => aspect('#card-preview'), { timeout: 30_000 }).toBeCloseTo(88.9 / 50.8, 2);
+  await expect.poll(() => aspect('#front-preview')).toBeCloseTo(88.9 / 50.8, 2);
+  const [svg] = await Promise.all([page.waitForEvent('download'), page.click('#dl-svg')]);
+  const text = fs.readFileSync((await svg.path())!, 'utf8');
+  expect(text).toContain('width="88.9mm" height="50.8mm"');
 });
 
 /** Ink coverage of the back preview, plus how dark a band down the card's left
