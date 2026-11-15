@@ -97,18 +97,42 @@ export function mountPlayer(root: HTMLElement): void {
         <div class="scan-overlay">
           <div class="progress-count" id="count">Looking…</div>
           <div class="progress-strip" id="strip"></div>
-          <div class="coach">Hold 15–25 cm away · pan slowly over every square</div>
+          <div class="coach" id="coach">${COACH_START}</div>
         </div>
       </div>
-      <button id="cancel">Cancel</button>
+      <div class="row" style="justify-content:center">
+        <button id="photo">Take a photo instead</button>
+        <button id="cancel">Cancel</button>
+      </div>
     `;
     const scanStage = stage.querySelector<HTMLElement>('#scan-stage')!;
     const count = stage.querySelector<HTMLElement>('#count')!;
     const strip = stage.querySelector<HTMLElement>('#strip')!;
-    stage.querySelector('#cancel')!.addEventListener('click', () => {
+    const coach = stage.querySelector<HTMLElement>('#coach')!;
+    // A scan that has gone quiet gets a nudge toward what actually helps: more
+    // pixels on the dots, or the photo route (the phone's own camera app
+    // focuses closer and shoots far sharper than a video frame).
+    let lastProgressAt = Date.now();
+    const nudge = setInterval(() => {
+      if (!coach.isConnected) return clearInterval(nudge);
+      if (Date.now() - lastProgressAt > STUCK_AFTER_MS) coach.textContent = COACH_STUCK;
+    }, 1000);
+    const leave = (): ChunkCollector | null => {
+      clearInterval(nudge);
+      const collector = scanner?.collector ?? null;
       scanner?.stop();
       scanner = null;
+      return collector;
+    };
+    stage.querySelector('#cancel')!.addEventListener('click', () => {
+      leave();
       showIdle();
+    });
+    // Squares already read stay read: the photo only has to cover the rest.
+    // The live camera is released first — a phone won't lend it to its own
+    // camera app while this page still holds it.
+    stage.querySelector('#photo')!.addEventListener('click', () => {
+      void showPhotos(leave() ?? new ChunkCollector(), []);
     });
 
     try {
@@ -119,13 +143,19 @@ export function mountPlayer(root: HTMLElement): void {
             count.textContent = 'Two cards in view?';
             return;
           }
+          lastProgressAt = Date.now();
+          coach.textContent = COACH_START;
           updateProgress(count, strip, scanner.collector);
           scanStage.classList.remove('flash');
           void scanStage.offsetWidth; // restart the animation
           scanStage.classList.add('flash');
         },
         onComplete() {
+          clearInterval(nudge);
           void showDecoding(scanner!.collector.assemble());
+        },
+        onReaderBroken() {
+          coach.textContent = COACH_BROKEN;
         },
       });
       scanStage.prepend(scanner.video);
@@ -137,6 +167,7 @@ export function mountPlayer(root: HTMLElement): void {
         scanStage.querySelector('.scan-overlay')!.appendChild(btn);
       }
     } catch {
+      clearInterval(nudge);
       showCameraDenied();
     }
   }
@@ -170,6 +201,7 @@ export function mountPlayer(root: HTMLElement): void {
 
     async function process(batch: File[]): Promise<void> {
       addBtn.disabled = true;
+      addBtn.textContent = 'Add another photo';
       msg.textContent = batch.length > 1 ? `Reading ${batch.length} photos…` : 'Reading photo…';
       let chunks = 0;
       let wrongCard = false;
@@ -200,7 +232,17 @@ export function mountPlayer(root: HTMLElement): void {
       }
     }
 
-    await process(files);
+    if (files.length) {
+      await process(files);
+      return;
+    }
+    // Arrived from the live scan with no photo yet: show what was already
+    // read and open the picker (still inside the tap that brought us here).
+    updateProgress(count, strip, collector);
+    msg.textContent = 'Take a sharp, close photo of the whole card in good light.';
+    addBtn.textContent = 'Take a photo';
+    addBtn.disabled = false;
+    input.click();
   }
 
   function showCameraDenied(): void {
@@ -326,6 +368,11 @@ export function mountPlayer(root: HTMLElement): void {
   if (resumed) void showDecoding(resumed);
   else showIdle();
 }
+
+const COACH_START = 'Fill the screen with the card · hold steady in good light';
+const COACH_STUCK = 'Stuck? Turn the phone sideways so the card fills the screen — or take a photo instead';
+const COACH_BROKEN = "Live scanning isn't working on this device — take a photo instead";
+const STUCK_AFTER_MS = 8000;
 
 type AssembledCard = ReturnType<ChunkCollector['assemble']>;
 const STASH_KEY = 'momento-pending-card';

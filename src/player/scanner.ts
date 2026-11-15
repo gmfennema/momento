@@ -18,6 +18,36 @@ prepareZXingModule({
 export interface ScannerCallbacks {
   onChunk(result: AddResult): void;
   onComplete(): void;
+  /** The reader itself keeps failing (not "no code in view" — an exception on
+   * every frame), so live scanning is not going to recover on this device. */
+  onReaderBroken?(): void;
+}
+
+/** Consecutive reader exceptions before the scan is declared broken. A stray
+ * bad frame is normal; a run this long is a dead wasm module or out of memory. */
+const READER_FAILURE_LIMIT = 20;
+
+/** Ask the camera for every pixel it has. A full card is ~270 dots wide, so a
+ * 1080p frame puts 2–3.5 px on each dot at arm's-length focus distance — the
+ * edge of what any reader can do, and where a real phone loses most codes. At
+ * 4K the same shot has twice that. `ideal` falls back to the camera's best. */
+const CAMERA_TRIES: MediaTrackConstraints[] = [
+  { facingMode: 'environment', width: { ideal: 3840 }, height: { ideal: 2160 } },
+  { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
+];
+
+async function openCamera(): Promise<MediaStream> {
+  let lastError: unknown;
+  for (const video of CAMERA_TRIES) {
+    try {
+      return await navigator.mediaDevices.getUserMedia({ video });
+    } catch (e) {
+      lastError = e;
+      // Permission refusals won't change with a smaller request.
+      if (e instanceof DOMException && (e.name === 'NotAllowedError' || e.name === 'SecurityError')) break;
+    }
+  }
+  throw lastError;
 }
 
 export interface PhotoScanResult {
@@ -98,13 +128,7 @@ export interface ScannerHandle {
 }
 
 export async function startScanner(cb: ScannerCallbacks): Promise<ScannerHandle> {
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: {
-      facingMode: 'environment',
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
-    },
-  });
+  const stream = await openCamera();
 
   const video = document.createElement('video');
   video.setAttribute('playsinline', '');
@@ -119,6 +143,7 @@ export async function startScanner(cb: ScannerCallbacks): Promise<ScannerHandle>
 
   let running = true;
   let busy = false;
+  let readerFailures = 0;
 
   async function processFrame(): Promise<void> {
     if (!running || busy || video.videoWidth === 0) return;
@@ -134,6 +159,7 @@ export async function startScanner(cb: ScannerCallbacks): Promise<ScannerHandle>
         tryInvert: true,
         maxNumberOfSymbols: 24,
       });
+      readerFailures = 0;
       for (const r of results) {
         if (!running) break;
         const bytes = chunkBytesFromScan(r.text, r.bytes);
@@ -148,7 +174,8 @@ export async function startScanner(cb: ScannerCallbacks): Promise<ScannerHandle>
         }
       }
     } catch {
-      // a bad frame is not fatal; keep scanning
+      // a bad frame is not fatal; keep scanning — but say so if it never stops
+      if (++readerFailures === READER_FAILURE_LIMIT) cb.onReaderBroken?.();
     } finally {
       busy = false;
     }
