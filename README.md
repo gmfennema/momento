@@ -9,9 +9,27 @@ the phone camera and plays the sound back.
 **The audio is stored nowhere but the card.** No servers, no accounts, no
 uploads — encoding and decoding happen entirely in the browser.
 
+The site is two pages that don't link to each other:
+
+- **`/` — the scanner.** The public home page, and the URL every card's entry
+  code points to. It is the site root with no hash or path, so the engraved
+  address never has to change. Cards engraved before the split point at
+  `/#p`, which lands on the same page.
+- **`/create/` — the card station.** Where cards are made. Nothing on the
+  scanner links to it, and it is marked `noindex`.
+
+The site is hosted on Vercel at **https://k.gabefen.com/** (`vercel.json`
+sends the cross-origin-isolation headers), and every card's entry code
+carries exactly that address, wherever the station runs (a card made from a
+local dev server still points at the live scanner). Set `VITE_PLAYER_URL` at
+build time to change it, but never after cards have been engraved with it.
+Cards engraved earlier point at `gmfennema.github.io/momento/#p`; GitHub Pages
+now serves only a redirect from there to the new domain (see
+`.github/workflows/deploy.yml`), so they still play.
+
 ## How it works
 
-1. **Generator** (`/`): upload or record audio → conditioned for the codec
+1. **Generator** (`/create/`): upload or record audio → conditioned for the codec
    (high-pass, leading/trailing silence dropped, loudness normalized) →
    trimmed to ≤10s → compressed in-browser with either
    [Mimi](https://huggingface.co/kyutai/mimi) (Kyutai's neural speech codec,
@@ -30,7 +48,7 @@ uploads — encoding and decoding happen entirely in the browser.
    own PNG/SVG pair.
    One ink on one stock, so the front prints, foils, or engraves with the
    same setup as the back.
-2. **Player** (`/#p`): tap scan → the camera reads codes in any order (multiple
+2. **Player** (`/`): tap scan → the camera reads codes in any order (multiple
    per frame) with live progress → chunks are reassembled → the codec named in
    the chunk headers decodes → Web Audio plays the sound. A Mimi card decodes
    straight to 24 kHz wideband voice (the ~60 MB decoder model is fetched on
@@ -173,9 +191,9 @@ without it, single-threaded.
 
 ```bash
 npm install        # also copies the zxing + lyra wasm into public/
-npm run dev        # generator at /, player at /#p
+npm run dev        # scanner at /, card station at /create/
 npm test           # unit + full-pipeline tests (node)
-npm run build      # typecheck + production build (base path /momento/)
+npm run build      # typecheck + production build (base path /momento/; deploy uses /)
 npm run e2e        # Playwright, against vite preview and a GitHub-Pages-like server (build first)
 ```
 
@@ -202,9 +220,9 @@ keeps resolving.
 ## Manual device checklist
 
 - [ ] iPhone Safari: record, generate, download PNG/SVG
-- [ ] iPhone Safari: scan an engraved/printed card end-to-end (`#p`)
+- [ ] iPhone Safari: scan an engraved/printed card end-to-end (`/`)
 - [ ] Android Chrome: same two flows; torch button appears when supported
-- [ ] Upload a photo of the card (`#p`) — including a HEIC straight from the iPhone camera roll
+- [ ] Upload a photo of the card (`/`) — including a HEIC straight from the iPhone camera roll
 - [ ] Inverted (black) card scans
 - [ ] Best (Mimi) card on an older iPhone and a mid-range Android: first scan downloads the ~56 MB model with progress, decodes a 10 s clip without the tab reloading (≈330 MB peak in desktop Chrome)
 - [ ] Airplane mode after first visit: generator still loads (PWA offline)

@@ -107,7 +107,6 @@ export function mountGenerator(root: HTMLElement): void {
   root.innerHTML = `
     ${brandHeader(
       'Ten seconds of sound on a business card. The audio lives only in the engraving — no servers, no storage, no accounts.',
-      'maker',
     )}
 
     <div class="panel">
@@ -184,7 +183,7 @@ export function mountGenerator(root: HTMLElement): void {
           <button id="test-scan">I want to test-scan it</button>
         </div>
         <div class="hint" id="test-hint" style="display:none">
-          Open <a href="#p"><strong>${playerUrl()}</strong></a> on your phone (or scan the card's entry code)
+          Open <strong>${playerUrl()}</strong> on your phone (or scan the card's entry code)
           and point the camera at this screen or a printout.
         </div>
       </div>
@@ -194,11 +193,10 @@ export function mountGenerator(root: HTMLElement): void {
     <footer>
       Audio is compressed entirely in your browser with
       <a href="https://huggingface.co/kyutai/mimi" target="_blank" rel="noreferrer">Mimi</a>
-      (<a href="mimi/NOTICE.md" target="_blank">CC-BY-4.0 notice</a>) or
+      (<a href="${import.meta.env.BASE_URL}mimi/NOTICE.md" target="_blank">CC-BY-4.0 notice</a>) or
       <a href="https://github.com/drowe67/codec2" target="_blank" rel="noreferrer">Codec 2</a>
-      (<a href="codec2/NOTICE.md" target="_blank">LGPL 2.1 notice</a>).
+      (<a href="${import.meta.env.BASE_URL}codec2/NOTICE.md" target="_blank">LGPL 2.1 notice</a>).
       Downloads are exactly card size — engrave at 100%, do not rescale.
-      · <a href="#p">Scan a card</a>
     </footer>
   `;
 
@@ -890,10 +888,14 @@ function todayIso(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/** The URL engraved in every card's entry code: the scanner home page. Once a
+ * card is engraved this can never change, so it is a fixed address rather than
+ * wherever the station happens to run — a card made from a local dev server
+ * must not point at localhost. VITE_PLAYER_URL overrides it at build time. */
+const PLAYER_URL = 'https://k.gabefen.com/';
+
 function playerUrl(): string {
-  // Origin-agnostic: whatever host serves the generator also serves the player,
-  // so a future custom domain needs no code change.
-  return location.origin + location.pathname.replace(/index\.html$/, '') + '#p';
+  return (import.meta.env.VITE_PLAYER_URL as string | undefined) || PLAYER_URL;
 }
 
 /** A canvas as a PNG that knows its physical size (PNG_DPI), so laser

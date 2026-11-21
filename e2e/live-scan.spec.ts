@@ -31,7 +31,7 @@ function y4mOfWindow(png: PNG, x0: number, y0: number, w: number, h: number): Bu
 test('player: live scan reads a code, coaches a stalled scan, and a photo finishes the card', async ({ page }) => {
   test.setTimeout(180_000);
   // A full-length card on a metal blank: five data codes in a 3 × 2 grid.
-  await page.goto('/momento/');
+  await page.goto('/momento/create/');
   await page.setInputFiles('#file-input', { name: 'clip.wav', mimeType: 'audio/wav', buffer: wavFixture(10) });
   await expect(page.locator('#stats-line')).toContainText('5 data codes', { timeout: 60_000 });
   const dataUrl = await page.locator('#card-preview').evaluate((c: HTMLCanvasElement) => c.toDataURL('image/png'));
@@ -54,7 +54,7 @@ test('player: live scan reads a code, coaches a stalled scan, and a photo finish
   });
   try {
     const cam = await browser.newPage();
-    await cam.goto(`${BASE}#p`);
+    await cam.goto(BASE);
     await cam.click('#start');
     await expect(cam.locator('#count')).toHaveText('1 of 5', { timeout: 30_000 });
     // Nothing else is ever in view — the coach changes its advice.
