@@ -73,11 +73,14 @@ describe('layoutFront', () => {
     expect(L.name!.yMm + L.name!.fontMm / 2).toBeLessThan(Math.min(...L.bars.map(([, y]) => y)));
   });
 
-  it('frames the front with a thin border that clears every mark', () => {
+  it('outlines the very edge of the card, following its corners', () => {
     const L = layoutFront(input({ voice: 'Emma', recordedAt: '2021-06-18', durationSec: 8 }));
-    const { insetMm, strokeMm } = L.border;
-    expect(insetMm).toBeGreaterThan(0);
+    const { insetMm, strokeMm, radiusMm } = L.border;
+    // The stroke's outer edge lands exactly on the card edge.
+    expect(insetMm - strokeMm / 2).toBeCloseTo(0, 6);
     expect(strokeMm).toBeLessThanOrEqual(0.3);
+    expect(radiusMm + strokeMm / 2).toBeCloseTo(3.18, 6);
+    expect(layoutFront(input({ cornerMm: 0 })).border.radiusMm).toBe(0);
     const inner = insetMm + strokeMm / 2;
     for (const [x, y, w, h] of L.bars) {
       expect(x).toBeGreaterThan(inner);

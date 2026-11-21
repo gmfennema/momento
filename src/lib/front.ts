@@ -6,7 +6,7 @@
 // Same pattern as render.ts: one geometry pass feeding both an SVG string
 // (vector, print/laser) and a canvas drawer (preview + high-DPI PNG).
 
-import { CARD_W_MM, CARD_H_MM } from './layout';
+import { CARD_SIZES, CARD_W_MM, CARD_H_MM, DEFAULT_CARD_SIZE } from './layout';
 
 /** Bars across the waveform. Enough for a fine, engraved-line texture while
  * keeping each bar ≈0.4 mm — comfortably above what printers and laser
@@ -29,6 +29,8 @@ export interface FrontInput {
   durationSec?: number;
   widthMm?: number;
   heightMm?: number;
+  /** the blank's corner radius; the border follows it (default: metal card) */
+  cornerMm?: number;
 }
 
 /**
@@ -71,6 +73,8 @@ const PALETTE: FrontColors = { bg: '#ffffff', ink: '#000000' };
 
 /** Secondary text (the metadata line) prints as a tone of the same ink. */
 const SECONDARY_OPACITY = 0.55;
+/** Width of the outline around the card's edge. */
+const BORDER_MM = 0.2;
 const BASELINE_OPACITY = 0.25;
 
 interface TextSpec {
@@ -87,7 +91,7 @@ export interface FrontLayout {
   /** rounded bars: [x, y, w, h] in mm, corner radius w/2 */
   bars: Array<[number, number, number, number]>;
   baseline: { x1Mm: number; x2Mm: number; yMm: number; strokeMm: number };
-  /** thin rounded frame inset from the card edge */
+  /** thin outline tracing the card's own edge and corners */
   border: { insetMm: number; radiusMm: number; strokeMm: number };
   /** the title across the top; absent when the card has none */
   name?: TextSpec;
@@ -167,13 +171,18 @@ export function layoutFront(input: FrontInput): FrontLayout {
     colors: PALETTE,
     bars,
     baseline: { x1Mm: margin, x2Mm: W - margin, yMm: waveCenterY, strokeMm: 0.1 },
-    // A hairline frame, 3 mm in from the edge: inside the metal card's 3.18 mm
-    // corner radius, and 0.2 mm wide so a laser or printer holds it cleanly.
-    border: { insetMm: 3, radiusMm: 1.2, strokeMm: 0.2 },
+    // A 0.2 mm outline on the very edge of the card, following the blank's
+    // corner radius. The stroke sits just inside the artboard so none of it is
+    // clipped off in the SVG or PNG.
+    border: {
+      insetMm: BORDER_MM / 2,
+      radiusMm: Math.max(0, (input.cornerMm ?? CARD_SIZES[DEFAULT_CARD_SIZE].cornerMm) - BORDER_MM / 2),
+      strokeMm: BORDER_MM,
+    },
     name: name ? { xMm: W / 2, yMm: H * 0.19, fontMm: nameFont, text: name } : undefined,
     hint: {
       xMm: centeredX(W, hintLs),
-      yMm: H * 0.875,
+      yMm: H * 0.898,
       fontMm: hintFont,
       letterSpacingMm: hintLs,
       text: metadataLine(input),

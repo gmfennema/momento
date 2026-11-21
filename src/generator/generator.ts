@@ -755,6 +755,7 @@ export function mountGenerator(root: HTMLElement): void {
         durationSec: seconds,
         widthMm: plan.widthMm,
         heightMm: plan.heightMm,
+        cornerMm: CARD_SIZES[state.cardSize].cornerMm,
       };
       renderPreview();
     } catch (e) {
