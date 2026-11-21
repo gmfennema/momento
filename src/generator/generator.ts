@@ -163,7 +163,7 @@ export function mountGenerator(root: HTMLElement): void {
         <p class="hint" style="margin:0">A laser burns slightly wider than the artwork, which thins the
           dots it leaves behind until phones can't read them. The card is drawn to cancel that out —
           if your engraved dots still look thin next to the gaps between them, go up a step.</p>
-        <label>Name line (front) <input type="text" id="text-line" placeholder="optional" maxlength="40" /></label>
+        <label>Title (front) <input type="text" id="text-line" placeholder="e.g. For Mom" maxlength="40" /></label>
         <label>Voice <input type="text" id="voice-line" placeholder="e.g. Emma" maxlength="24" /></label>
         <label>Recorded <input type="date" id="recorded-date" /></label>
       </div>

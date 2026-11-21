@@ -42,8 +42,8 @@ now serves only a redirect from there to the new domain (see
    window top-left (see [Card back texture](#card-back-texture)). Download as
    high-DPI PNG or vector SVG, with an invert option
    for black cards. The generator also renders a matching
-   **card front** — a monochrome, letterpress-style face with the MOMENTO
-   wordmark, the clip's waveform as fine mirrored bars, the name line, and a
+   **card front** — a monochrome, letterpress-style face with the card's title
+   across the top, the clip's waveform as fine mirrored bars, and a
    clip-metadata line (voice · recorded date · duration) — downloadable as its
    own PNG/SVG pair.
    One ink on one stock, so the front prints, foils, or engraves with the

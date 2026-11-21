@@ -69,7 +69,8 @@ describe('layoutFront', () => {
       expect(y + h).toBeLessThanOrEqual(CARD_H_MM);
     }
     expect(L.hint.yMm).toBeLessThan(CARD_H_MM);
-    expect(L.name!.yMm).toBeGreaterThan(Math.max(...L.bars.map(([, y, , h]) => y + h)));
+    // The title sits across the top, clear above the tallest bar.
+    expect(L.name!.yMm + L.name!.fontMm / 2).toBeLessThan(Math.min(...L.bars.map(([, y]) => y)));
   });
 
   it('bars are mirrored around one center line', () => {
@@ -79,10 +80,10 @@ describe('layoutFront', () => {
     }
   });
 
-  it('omits the name when absent and recenters the wave', () => {
+  it('omits the title when absent and recenters the wave', () => {
     const bare = layoutFront(input({ textLine: undefined }));
     expect(bare.name).toBeUndefined();
-    expect(bare.baseline.yMm).toBeGreaterThan(layoutFront(input()).baseline.yMm);
+    expect(bare.baseline.yMm).toBeLessThan(layoutFront(input()).baseline.yMm);
   });
 
   it('shrinks long names instead of overflowing', () => {
@@ -136,7 +137,7 @@ describe('renderFrontSvg', () => {
     expect(svg).toContain(`width="${CARD_W_MM}mm"`);
     expect(svg).toContain(`height="${CARD_H_MM}mm"`);
     expect((svg.match(/<rect [^>]*rx=/g) ?? []).length).toBe(FRONT_BAR_COUNT);
-    expect(svg).toContain('MOMENTO');
+    expect(svg).not.toContain('MOMENTO');
     expect(svg).toContain('letter-spacing');
     expect(svg).toContain('VOICE: EMMA · RECORDED: 06.18.21 · DURATION: 00:08');
   });

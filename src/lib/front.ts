@@ -1,7 +1,7 @@
 // Card FRONT rendering — the human-facing side. Where the back is a dense
-// machine-readable QR mosaic, the front is the keepsake: a letterspaced
-// wordmark, the clip's waveform as a fine mirrored bar chart, the owner's
-// name line, and a nudge to flip the card over. Strictly monochrome — one
+// machine-readable QR mosaic, the front is the keepsake: the owner's title
+// across the top, the clip's waveform as a fine mirrored bar chart, and a
+// metadata line (or a nudge to flip the card over). No brand mark. Strictly monochrome — one
 // ink on one stock — so the same artwork prints, foils, or laser-engraves.
 // Same pattern as render.ts: one geometry pass feeding both an SVG string
 // (vector, print/laser) and a canvas drawer (preview + high-DPI PNG).
@@ -19,7 +19,7 @@ export const MIN_BAR = 0.045;
 export interface FrontInput {
   /** normalized bar amplitudes, each in [MIN_BAR, 1] (see computeWaveformBars) */
   bars: number[];
-  /** owner's name / caption, shown under the waveform */
+  /** the card's title (e.g. "For Mom"), shown across the top */
   textLine?: string;
   /** speaker/voice credit for the metadata line (e.g. "Emma") */
   voice?: string;
@@ -69,7 +69,7 @@ export interface FrontColors {
  * so it never inverts.) */
 const PALETTE: FrontColors = { bg: '#ffffff', ink: '#000000' };
 
-/** Secondary text (wordmark, hint) prints as a tone of the same ink. */
+/** Secondary text (the metadata line) prints as a tone of the same ink. */
 const SECONDARY_OPACITY = 0.55;
 const BASELINE_OPACITY = 0.25;
 
@@ -87,7 +87,7 @@ export interface FrontLayout {
   /** rounded bars: [x, y, w, h] in mm, corner radius w/2 */
   bars: Array<[number, number, number, number]>;
   baseline: { x1Mm: number; x2Mm: number; yMm: number; strokeMm: number };
-  wordmark: TextSpec & { letterSpacingMm: number };
+  /** the title across the top; absent when the card has none */
   name?: TextSpec;
   hint: TextSpec & { letterSpacingMm: number };
 }
@@ -137,19 +137,16 @@ export function layoutFront(input: FrontInput): FrontLayout {
   const innerW = W - 2 * margin;
   const name = input.textLine?.trim();
 
-  // Waveform: fine mirrored bars about a hairline center rule. With a name
-  // line the wave gives up a little height and rides higher.
-  const waveCenterY = name ? H * 0.492 : H * 0.512;
-  const halfMax = name ? H * 0.154 : H * 0.181;
+  // Waveform: fine mirrored bars about a hairline center rule. With a title
+  // across the top the wave gives up a little height and rides lower.
+  const waveCenterY = name ? H * 0.535 : H * 0.5;
+  const halfMax = name ? H * 0.19 : H * 0.22;
   const pitch = innerW / Math.max(1, input.bars.length);
   const barW = pitch * 0.42;
   const bars: Array<[number, number, number, number]> = input.bars.map((v, i) => {
     const h = Math.max(barW, Math.min(1, v) * 2 * halfMax);
     return [margin + i * pitch + (pitch - barW) / 2, waveCenterY - h / 2, barW, h];
   });
-
-  const wordmarkFont = H * 0.057;
-  const wordmarkLs = wordmarkFont * 0.42;
 
   const nameBase = H * 0.076;
   // Long names shrink instead of overflowing (rough 0.52·em serif glyph width).
@@ -168,14 +165,7 @@ export function layoutFront(input: FrontInput): FrontLayout {
     colors: PALETTE,
     bars,
     baseline: { x1Mm: margin, x2Mm: W - margin, yMm: waveCenterY, strokeMm: 0.1 },
-    wordmark: {
-      xMm: centeredX(W, wordmarkLs),
-      yMm: H * 0.187,
-      fontMm: wordmarkFont,
-      letterSpacingMm: wordmarkLs,
-      text: 'MOMENTO',
-    },
-    name: name ? { xMm: W / 2, yMm: H * 0.783, fontMm: nameFont, text: name } : undefined,
+    name: name ? { xMm: W / 2, yMm: H * 0.19, fontMm: nameFont, text: name } : undefined,
     hint: {
       xMm: centeredX(W, hintLs),
       yMm: H * 0.898,
@@ -213,9 +203,6 @@ export function renderFrontSvg(input: FrontInput): string {
         `rx="${fmt(w / 2)}" fill="${c.ink}"/>`,
     );
   }
-  parts.push(
-    text(L.wordmark, { opacity: SECONDARY_OPACITY, letterSpacingMm: L.wordmark.letterSpacingMm }),
-  );
   if (L.name) parts.push(text(L.name, {}));
   parts.push(
     text(L.hint, { opacity: SECONDARY_OPACITY, letterSpacingMm: L.hint.letterSpacingMm }),
@@ -274,9 +261,6 @@ export function drawFront(
   // assignment and the letterspaced lines just render a touch tighter.
   ctx.save();
   ctx.globalAlpha = SECONDARY_OPACITY;
-  ctx.font = `${px(L.wordmark.fontMm)}px ${FONT_SERIF}`;
-  ctx.letterSpacing = `${px(L.wordmark.letterSpacingMm)}px`;
-  ctx.fillText(L.wordmark.text, px(L.wordmark.xMm), px(L.wordmark.yMm));
   ctx.font = `${px(L.hint.fontMm)}px ${FONT_SERIF}`;
   ctx.letterSpacing = `${px(L.hint.letterSpacingMm)}px`;
   ctx.fillText(L.hint.text, px(L.hint.xMm), px(L.hint.yMm));
