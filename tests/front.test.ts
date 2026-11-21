@@ -73,6 +73,22 @@ describe('layoutFront', () => {
     expect(L.name!.yMm + L.name!.fontMm / 2).toBeLessThan(Math.min(...L.bars.map(([, y]) => y)));
   });
 
+  it('frames the front with a thin border that clears every mark', () => {
+    const L = layoutFront(input({ voice: 'Emma', recordedAt: '2021-06-18', durationSec: 8 }));
+    const { insetMm, strokeMm } = L.border;
+    expect(insetMm).toBeGreaterThan(0);
+    expect(strokeMm).toBeLessThanOrEqual(0.3);
+    const inner = insetMm + strokeMm / 2;
+    for (const [x, y, w, h] of L.bars) {
+      expect(x).toBeGreaterThan(inner);
+      expect(y).toBeGreaterThan(inner);
+      expect(x + w).toBeLessThan(L.widthMm - inner);
+      expect(y + h).toBeLessThan(L.heightMm - inner);
+    }
+    expect(L.name!.yMm - L.name!.fontMm / 2).toBeGreaterThan(inner);
+    expect(L.hint.yMm + L.hint.fontMm / 2).toBeLessThan(L.heightMm - inner - 1);
+  });
+
   it('bars are mirrored around one center line', () => {
     const L = layoutFront(input());
     for (const [, y, , h] of L.bars) {
@@ -136,7 +152,9 @@ describe('renderFrontSvg', () => {
     const svg = renderFrontSvg(input);
     expect(svg).toContain(`width="${CARD_W_MM}mm"`);
     expect(svg).toContain(`height="${CARD_H_MM}mm"`);
-    expect((svg.match(/<rect [^>]*rx=/g) ?? []).length).toBe(FRONT_BAR_COUNT);
+    // one rounded rect per bar, plus the border
+    expect((svg.match(/<rect [^>]*rx=/g) ?? []).length).toBe(FRONT_BAR_COUNT + 1);
+    expect(svg).toMatch(/<rect [^>]*fill="none"[^>]*stroke-width="0.2"/);
     expect(svg).not.toContain('MOMENTO');
     expect(svg).toContain('letter-spacing');
     expect(svg).toContain('VOICE: EMMA · RECORDED: 06.18.21 · DURATION: 00:08');

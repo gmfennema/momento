@@ -87,6 +87,8 @@ export interface FrontLayout {
   /** rounded bars: [x, y, w, h] in mm, corner radius w/2 */
   bars: Array<[number, number, number, number]>;
   baseline: { x1Mm: number; x2Mm: number; yMm: number; strokeMm: number };
+  /** thin rounded frame inset from the card edge */
+  border: { insetMm: number; radiusMm: number; strokeMm: number };
   /** the title across the top; absent when the card has none */
   name?: TextSpec;
   hint: TextSpec & { letterSpacingMm: number };
@@ -165,10 +167,13 @@ export function layoutFront(input: FrontInput): FrontLayout {
     colors: PALETTE,
     bars,
     baseline: { x1Mm: margin, x2Mm: W - margin, yMm: waveCenterY, strokeMm: 0.1 },
+    // A hairline frame, 3 mm in from the edge: inside the metal card's 3.18 mm
+    // corner radius, and 0.2 mm wide so a laser or printer holds it cleanly.
+    border: { insetMm: 3, radiusMm: 1.2, strokeMm: 0.2 },
     name: name ? { xMm: W / 2, yMm: H * 0.19, fontMm: nameFont, text: name } : undefined,
     hint: {
       xMm: centeredX(W, hintLs),
-      yMm: H * 0.898,
+      yMm: H * 0.875,
       fontMm: hintFont,
       letterSpacingMm: hintLs,
       text: metadataLine(input),
@@ -196,6 +201,9 @@ export function renderFrontSvg(input: FrontInput): string {
     `<line x1="${fmt(L.baseline.x1Mm)}" y1="${fmt(L.baseline.yMm)}" ` +
       `x2="${fmt(L.baseline.x2Mm)}" y2="${fmt(L.baseline.yMm)}" ` +
       `stroke="${c.ink}" stroke-width="${L.baseline.strokeMm}" opacity="${BASELINE_OPACITY}"/>`,
+    `<rect x="${fmt(L.border.insetMm)}" y="${fmt(L.border.insetMm)}" ` +
+      `width="${fmt(L.widthMm - 2 * L.border.insetMm)}" height="${fmt(L.heightMm - 2 * L.border.insetMm)}" ` +
+      `rx="${fmt(L.border.radiusMm)}" fill="none" stroke="${c.ink}" stroke-width="${L.border.strokeMm}"/>`,
   );
   for (const [x, y, w, h] of L.bars) {
     parts.push(
@@ -248,6 +256,20 @@ export function drawFront(
   ctx.lineTo(px(L.baseline.x2Mm), px(L.baseline.yMm));
   ctx.stroke();
   ctx.restore();
+
+  const b = L.border;
+  ctx.strokeStyle = c.ink;
+  ctx.lineWidth = Math.max(1, px(b.strokeMm));
+  ctx.beginPath();
+  roundedRectPath(
+    ctx,
+    px(b.insetMm),
+    px(b.insetMm),
+    px(L.widthMm - 2 * b.insetMm),
+    px(L.heightMm - 2 * b.insetMm),
+    px(b.radiusMm),
+  );
+  ctx.stroke();
 
   ctx.fillStyle = c.ink;
   ctx.beginPath();
