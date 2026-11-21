@@ -1,8 +1,13 @@
-name: Deploy to GitHub Pages
+name: Test, and redirect the old GitHub Pages address
+
+# The site is hosted on Vercel at https://k.gabefen.com/ (see vercel.json).
+# Cards engraved before the move point at gmfennema.github.io/momento/#p, so
+# GitHub Pages now serves only a redirect to the new domain, keeping the hash.
 
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -11,11 +16,11 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,16 +31,28 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
 
-  deploy:
-    needs: build
+  redirect:
+    if: github.ref == 'refs/heads/main'
+    needs: test
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Build the redirect page
+        run: |
+          mkdir stub
+          cat > stub/index.html <<'HTML'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>Moved</title>
+          <script>location.replace('https://k.gabefen.com/' + location.hash);</script>
+          <a href="https://k.gabefen.com/">This card's player has moved to k.gabefen.com</a>
+          HTML
+          cp stub/index.html stub/404.html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: stub
       - id: deployment
         uses: actions/deploy-pages@v4

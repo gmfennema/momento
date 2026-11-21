@@ -56,14 +56,20 @@ async function heavy(request: Request): Promise<Response> {
 
 // Navigations get the precached shell directly (instant load offline and on
 // flaky networks); shell updates arrive through new service worker versions.
-async function shell(request: Request): Promise<Response> {
-  const shellKey = getCacheKeyForURL('index.html');
+// Two pages: the card maker under create/, the scanner for everything else
+// (including old cards' '#p' URLs).
+const SCOPE_PATH = new URL(self.registration.scope).pathname;
+
+async function shell(request: Request, url: URL): Promise<Response> {
+  const page = url.pathname.slice(SCOPE_PATH.length);
+  const isCreate = page === 'create' || page.startsWith('create/');
+  const shellKey = getCacheKeyForURL(isCreate ? 'create/index.html' : 'index.html');
   const cached = shellKey ? await caches.match(shellKey) : undefined;
   return cached ?? fetch(request);
 }
 
 async function serve(request: Request, url: URL): Promise<Response> {
-  if (request.mode === 'navigate') return shell(request);
+  if (request.mode === 'navigate') return shell(request, url);
   if (HEAVY_PATH.test(url.pathname)) return heavy(request);
   return (await matchPrecache(request)) ?? fetch(request);
 }

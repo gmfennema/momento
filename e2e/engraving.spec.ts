@@ -60,7 +60,7 @@ function engravedShot(card: PNG): PNG {
 
 test('player: reads a card whose dots the laser burned thin', async ({ page }) => {
   test.setTimeout(120_000);
-  await page.goto('/momento/');
+  await page.goto('/momento/create/');
   await page.setInputFiles('#file-input', { name: 'clip.wav', mimeType: 'audio/wav', buffer: wavFixture(10) });
   await expect(page.locator('#stats-line')).toContainText('5 data codes', { timeout: 60_000 });
   const preview = (): Promise<string> =>
@@ -80,7 +80,7 @@ test('player: reads a card whose dots the laser burned thin', async ({ page }) =
   expect(plain.filter((r) => r.bytes[0] === 0x4d).length).toBeLessThan(4);
 
   // …but the player still gets every code out of the same photo.
-  await page.goto('/momento/#p');
+  await page.goto('/momento/');
   await page.locator('#stage input[type="file"]').setInputFiles({ name: 'card.png', mimeType: 'image/png', buffer: PNG.sync.write(shot) });
   await expect(page.locator('#play')).toBeVisible({ timeout: 60_000 });
 });

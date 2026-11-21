@@ -25,14 +25,11 @@ export function waveMotif(className = 'wave'): string {
   );
 }
 
-export function brandHeader(tagline: string, activePage?: 'maker' | 'scan'): string {
+// No navigation: the scanner (home page) and the card maker (create/) are
+// deliberately kept from linking to each other.
+export function brandHeader(tagline: string): string {
   return `
     <header class="masthead">
-      <nav class="masthead-nav">
-        <a href="#" class="nav-link${activePage === 'maker' ? ' active' : ''}">Make a card</a>
-        <span class="nav-sep">·</span>
-        <a href="#p" class="nav-link${activePage === 'scan' ? ' active' : ''}">Scan a card</a>
-      </nav>
       <h1 class="wordmark">Momento</h1>
       ${waveMotif()}
       <p class="tagline">${tagline}</p>

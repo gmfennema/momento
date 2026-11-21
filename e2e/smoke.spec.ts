@@ -3,13 +3,30 @@ import { expect, test } from '@playwright/test';
 import { PNG } from 'pngjs';
 import { wavFixture } from './fixtures';
 
-test('page is cross-origin isolated so threaded wasm (Lyra playback, ort) can run', async ({ page }) => {
+test('both pages are cross-origin isolated so threaded wasm (Lyra playback, ort) can run', async ({ page }) => {
+  for (const path of ['/momento/', '/momento/create/']) {
+    await page.goto(path);
+    expect(await page.evaluate(() => crossOriginIsolated)).toBe(true);
+  }
+});
+
+test('the scanner is the home page, the maker lives at create/, and neither links to the other', async ({ page }) => {
   await page.goto('/momento/');
-  expect(await page.evaluate(() => crossOriginIsolated)).toBe(true);
+  await expect(page.locator('#stage')).toBeVisible();
+  await expect(page.locator('#file-input')).toHaveCount(0);
+  expect(await page.locator('a[href*="create"]').count()).toBe(0);
+
+  await page.goto('/momento/create/');
+  await expect(page.locator('#file-input')).toBeAttached();
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex/);
+  // No link back to the scanner: every link on the page leaves the site or
+  // opens a licence notice.
+  const hrefs = await page.locator('a[href]').evaluateAll((as) => as.map((a) => a.getAttribute('href')!));
+  for (const href of hrefs) expect(href).toMatch(/^https?:|NOTICE\.md$/);
 });
 
 test('generator: upload → stats → card preview → downloads enabled', async ({ page }) => {
-  await page.goto('/momento/');
+  await page.goto('/momento/create/');
   await expect(page.locator('h1')).toContainText('Momento');
 
   await page.setInputFiles('#file-input', {
@@ -69,7 +86,7 @@ test('generator: upload → stats → card preview → downloads enabled', async
 });
 
 test('generator: the card size setting reshapes both faces', async ({ page }) => {
-  await page.goto('/momento/');
+  await page.goto('/momento/create/');
   await page.setInputFiles('#file-input', { name: 'fixture.wav', mimeType: 'audio/wav', buffer: wavFixture() });
   await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 20_000 });
   const aspect = (id: string) => page.locator(id).evaluate((c: HTMLCanvasElement) => c.width / c.height);
@@ -108,7 +125,7 @@ const sampleBack = (page: import('@playwright/test').Page) =>
   });
 
 test('generator: invert toggle inverts the codes but keeps the background white', async ({ page }) => {
-  await page.goto('/momento/');
+  await page.goto('/momento/create/');
   await page.setInputFiles('#file-input', {
     name: 'fixture.wav',
     mimeType: 'audio/wav',
@@ -136,7 +153,7 @@ test('generator: invert toggle inverts the codes but keeps the background white'
 });
 
 test('generator: the pixel field fills the card edge to edge, and is optional', async ({ page }) => {
-  await page.goto('/momento/');
+  await page.goto('/momento/create/');
   await page.setInputFiles('#file-input', {
     name: 'fixture.wav',
     mimeType: 'audio/wav',
@@ -159,7 +176,7 @@ test('generator: the pixel field fills the card edge to edge, and is optional', 
 });
 
 test('player: scan screen shows guidance when camera is unavailable', async ({ page }) => {
-  await page.goto('/momento/#p');
+  await page.goto('/momento/');
   await expect(page.locator('.player')).toContainText('This card holds a sound');
   await page.click('#start');
   // Headless chromium without fake camera → denied path, which still offers photo upload.
@@ -172,7 +189,7 @@ test('player: photo of a Mimi card → neural decode → ready to play', async (
   // Generate a card (the default Best tier fits this clip) and capture its
   // preview as a PNG "photo" — this exercises the full neural codec round
   // trip: encode → QR card → scan → decode.
-  await page.goto('/momento/');
+  await page.goto('/momento/create/');
   await page.setInputFiles('#file-input', {
     name: 'fixture.wav',
     mimeType: 'audio/wav',
@@ -186,7 +203,7 @@ test('player: photo of a Mimi card → neural decode → ready to play', async (
   const png = Buffer.from(dataUrl.split(',')[1]!, 'base64');
 
   // Feed that photo into the player's upload entry.
-  await page.goto('/momento/#p');
+  await page.goto('/momento/');
   await expect(page.locator('#upload')).toBeVisible();
   await page.locator('#stage input[type="file"]').setInputFiles({
     name: 'card.png',
@@ -199,7 +216,7 @@ test('player: photo of a Mimi card → neural decode → ready to play', async (
 });
 
 test('player: photo of a Codec 2 card still decodes (wire v0 back-compat)', async ({ page }) => {
-  await page.goto('/momento/');
+  await page.goto('/momento/create/');
   await page.setInputFiles('#file-input', {
     name: 'fixture.wav',
     mimeType: 'audio/wav',
@@ -213,7 +230,7 @@ test('player: photo of a Codec 2 card still decodes (wire v0 back-compat)', asyn
     .evaluate((c: HTMLCanvasElement) => c.toDataURL('image/png'));
   const png = Buffer.from(dataUrl.split(',')[1]!, 'base64');
 
-  await page.goto('/momento/#p');
+  await page.goto('/momento/');
   await expect(page.locator('#upload')).toBeVisible();
   await page.locator('#stage input[type="file"]').setInputFiles({
     name: 'card.png',
@@ -227,7 +244,7 @@ test('player: photo of a Codec 2 card still decodes (wire v0 back-compat)', asyn
 
 test('generator: previewing a tier plays the card through the player pipeline', async ({ page }) => {
   test.setTimeout(120_000);
-  await page.goto('/momento/');
+  await page.goto('/momento/create/');
   await page.setInputFiles('#file-input', {
     name: 'fixture.wav',
     mimeType: 'audio/wav',
@@ -246,7 +263,7 @@ test('generator: previewing a tier plays the card through the player pipeline', 
 test('generator: a shorter clip gets a deeper Mimi code stack', async ({ page }) => {
   test.setTimeout(120_000);
   const depthFor = async (seconds: number): Promise<number> => {
-    await page.goto('/momento/');
+    await page.goto('/momento/create/');
     await page.setInputFiles('#file-input', {
       name: 'clip.wav',
       mimeType: 'audio/wav',

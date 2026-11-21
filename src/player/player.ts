@@ -22,7 +22,6 @@ export function mountPlayer(root: HTMLElement): void {
     <div class="player">
       ${brandHeader(
         'This card holds a sound. Scan every code on it to listen — the audio exists nowhere else.',
-        'scan',
       )}
       <div id="stage"></div>
     </div>
@@ -339,7 +338,7 @@ export function mountPlayer(root: HTMLElement): void {
     // CC-BY attribution for the model every Mimi listener downloads.
     const creditNote =
       restoration === 'mimi'
-        ? `<p class="hint">Voice decoded with Kyutai's <a href="https://huggingface.co/kyutai/mimi" target="_blank" rel="noreferrer">Mimi</a> codec (<a href="mimi/NOTICE.md" target="_blank">CC-BY-4.0</a>).</p>`
+        ? `<p class="hint">Voice decoded with Kyutai's <a href="https://huggingface.co/kyutai/mimi" target="_blank" rel="noreferrer">Mimi</a> codec (<a href="${import.meta.env.BASE_URL}mimi/NOTICE.md" target="_blank">CC-BY-4.0</a>).</p>`
         : '';
     stage.innerHTML = `
       <button class="big-play" id="play">▶</button>

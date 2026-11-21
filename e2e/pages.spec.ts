@@ -20,7 +20,7 @@ async function isolated(page: Page): Promise<void> {
 
 test('GitHub Pages: an isolated page still makes and plays a Mimi card', async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto(PAGES);
+  await page.goto(`${PAGES}create/`);
   await isolated(page);
 
   // Make a card: the generator encodes with Mimi in the onnxruntime worker.
@@ -32,7 +32,8 @@ test('GitHub Pages: an isolated page still makes and plays a Mimi card', async (
 
   // Play it back on a fresh, already-controlled visit — every visit after the
   // first is one of these.
-  await page.goto(`${PAGES}#p`);
+  // The worker serves each page its own shell: the scanner at the root.
+  await page.goto(PAGES);
   await page.reload();
   expect(await page.evaluate(() => crossOriginIsolated)).toBe(true);
   await page
