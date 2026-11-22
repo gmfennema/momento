@@ -17,7 +17,7 @@
 //
 // Pure helpers (bit packing, resampling) run in node tests; the sessions are
 // created by the caller-supplied loader so tests can feed model bytes from
-// disk the same way bwe.test.ts does.
+// disk.
 
 // No imports from audio.ts: it re-exports from layout.ts, which imports this
 // module's constants at load time — a cycle that breaks whichever loads first.
@@ -80,7 +80,7 @@ export function unpackCodes(bytes: Uint8Array, depth: number): number[][] {
 
 // 16 kHz → 24 kHz: upsample by 3, low-pass at the input Nyquist (with a little
 // guard band), keep every second sample. Blackman-windowed sinc, polyphase
-// branches normalised to unity DC gain — the same construction as bwe.ts.
+// branches normalised to unity DC gain.
 const UP = 3;
 const DOWN = 2;
 const HALF_TAPS = 16 * UP;
@@ -243,8 +243,7 @@ async function fetchModel(kind: ModelKind): Promise<Uint8Array> {
 let ortModule: Promise<typeof import('onnxruntime-web')> | null = null;
 
 function loadOrt(): Promise<typeof import('onnxruntime-web')> {
-  // Same runtime configuration as the neural restorer (bwe.ts): the wasm-only
-  // bundle, its binary from public/ort/, and inference proxied to a worker so
+  // The wasm-only bundle, its binary from public/ort/, and inference proxied to a worker so
   // the page keeps painting during a multi-second decode.
   return (ortModule ??= (async () => {
     const ort = await import('onnxruntime-web/wasm');

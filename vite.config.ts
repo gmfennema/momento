@@ -7,7 +7,7 @@ import { VitePWA } from 'vite-plugin-pwa';
 // e2e tests still use.
 const base = process.env.BASE_PATH ?? '/momento/';
 
-// The Lyra codec wasm uses threads → SharedArrayBuffer → the page must be
+// onnxruntime's wasm (Mimi) uses threads → SharedArrayBuffer → the page must be
 // cross-origin isolated. Dev/preview servers and Vercel (vercel.json) send the
 // headers directly; the service worker also injects them (see src/sw.ts), for
 // any host that can't.
@@ -51,11 +51,10 @@ export default defineConfig({
       srcDir: 'src',
       filename: 'sw.ts',
       injectManifest: {
-        globPatterns: ['**/*.{js,css,html,wasm,tflite,webmanifest,png,svg,ico,woff2}'],
-        // The neural enhancer's runtime and models are far too big to force
+        globPatterns: ['**/*.{js,css,html,wasm,webmanifest,png,svg,ico,woff2}'],
+        // Mimi's runtime and models are far too big to force
         // on every visitor — the service worker caches them on first use.
-        globIgnores: ['ort/**', 'bwe/**', 'mimi/**'],
-        // the Lyra wasm is ~3.8 MB
+        globIgnores: ['ort/**', 'mimi/**'],
         maximumFileSizeToCacheInBytes: 5_000_000,
       },
       manifest: {

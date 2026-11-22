@@ -1,8 +1,8 @@
 // Browser-only audio helpers: decode/resample to the internal 16 kHz mono
 // PCM, playback via Web Audio, waveform drawing.
 //
-// Everything in the generator runs at 16 kHz (Lyra's wideband rate); the
-// Codec 2 path decimates to 8 kHz at encode time (lib/resample.ts).
+// Everything in the generator runs at 16 kHz: Pulse works at that rate and
+// Mimi resamples to its own 24 kHz.
 
 export const PCM_SAMPLE_RATE = 16000;
 
@@ -124,13 +124,17 @@ export function drawWaveform(
   ctx.clearRect(0, 0, cssW, cssH);
 
   const durationSec = pcm.length / sampleRate;
+  // Colours come from the page's stylesheet (--wave-ink, --wave-sel,
+  // --wave-edge on the canvas), so each page themes its own waveform.
+  const css = getComputedStyle(canvas);
+  const color = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback;
   if (selection) {
     const [a, b] = selection;
-    ctx.fillStyle = 'rgba(232, 227, 216, 0.09)';
+    ctx.fillStyle = color('--wave-sel', 'rgba(232, 227, 216, 0.09)');
     ctx.fillRect((a / durationSec) * cssW, 0, ((b - a) / durationSec) * cssW, cssH);
   }
 
-  ctx.strokeStyle = '#d6cfc0';
+  ctx.strokeStyle = color('--wave-ink', '#d6cfc0');
   ctx.lineWidth = 1;
   ctx.beginPath();
   const samplesPerPx = Math.max(1, Math.floor(pcm.length / cssW));
@@ -151,7 +155,7 @@ export function drawWaveform(
 
   if (selection) {
     const [a, b] = selection;
-    ctx.fillStyle = '#e8e3d8';
+    ctx.fillStyle = color('--wave-edge', '#e8e3d8');
     for (const s of [a, b]) {
       ctx.fillRect((s / durationSec) * cssW - 1, 0, 2, cssH);
     }

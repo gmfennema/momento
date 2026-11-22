@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { chromium, expect, test } from '@playwright/test';
 import { PNG } from 'pngjs';
-import { wavFixture } from './fixtures';
+import { lightCard, wavFixture } from './fixtures';
 
 // The live-camera path, driven by Chromium's fake camera: a feed that only
 // ever shows ONE of the card's codes (a listener holding the phone too close,
@@ -33,6 +33,7 @@ test('player: live scan reads a code, coaches a stalled scan, and a photo finish
   // A full-length card on a metal blank: five data codes in a 3 × 2 grid.
   await page.goto('/momento/create/');
   await page.setInputFiles('#file-input', { name: 'clip.wav', mimeType: 'audio/wav', buffer: wavFixture(10) });
+  await lightCard(page);
   await expect(page.locator('#stats-line')).toContainText('5 data codes', { timeout: 60_000 });
   const dataUrl = await page.locator('#card-preview').evaluate((c: HTMLCanvasElement) => c.toDataURL('image/png'));
   const cardPng = Buffer.from(dataUrl.split(',')[1]!, 'base64');

@@ -9,14 +9,19 @@ export interface RecorderHandle {
 
 export const RECORD_LIMIT_MS = 10_500;
 
-export async function startRecording(onTick?: (elapsedMs: number) => void): Promise<RecorderHandle> {
+/** `raw` turns off the browser's voice processing: a doppler heartbeat is a
+ * noise-like sound, and noise suppression would erase it. */
+export async function startRecording(
+  onTick?: (elapsedMs: number) => void,
+  opts: { raw?: boolean } = {},
+): Promise<RecorderHandle> {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       // No far-end signal to cancel when recording a memo — echo cancellation
       // can only duck/distort the voice, so keep it off.
       echoCancellation: false,
-      noiseSuppression: true,
-      autoGainControl: true,
+      noiseSuppression: !opts.raw,
+      autoGainControl: !opts.raw,
       channelCount: 1,
     },
   });

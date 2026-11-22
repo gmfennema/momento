@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { PNG } from 'pngjs';
-import { wavFixture } from './fixtures';
+import { backPhoto, backReady, lightCard, wavFixture } from './fixtures';
 
 test('both pages are cross-origin isolated so threaded wasm (Lyra playback, ort) can run', async ({ page }) => {
   for (const path of ['/momento/', '/momento/create/']) {
@@ -27,36 +27,30 @@ test('the scanner is the home page, the maker lives at create/, and neither link
 
 test('generator: upload → stats → card preview → downloads enabled', async ({ page }) => {
   await page.goto('/momento/create/');
-  await expect(page.locator('h1')).toContainText('Momento');
+  await expect(page.locator('.st-mark')).toContainText('Momento');
+  // A voice card is the default kind.
+  await expect(page.locator('.kind[data-kind="voice"]')).toHaveAttribute('aria-checked', 'true');
 
   await page.setInputFiles('#file-input', {
     name: 'fixture.wav',
     mimeType: 'audio/wav',
     buffer: wavFixture(),
   });
-
-  // Named uploads report "<file> (<n>s)"; a mic recording reports "<n>s loaded".
-  await expect(page.locator('#audio-status')).toContainText('fixture.wav (2.9s)', {
-    timeout: 15_000,
-  });
-  await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('#audio-status')).toContainText('fixture.wav, 2.9 s', { timeout: 15_000 });
+  await backReady(page);
   await expect(page.locator('#stats-line')).toContainText('data codes');
   await expect(page.locator('#stats-line')).toContainText('mm modules');
-  // The default Best preference lands on Mimi, at the deepest code stack the
-  // card holds for a clip this short…
+  // A voice goes on Mimi, at the deepest code stack the card holds for a clip this short…
   await expect(page.locator('#stats-line')).toContainText('(20 codes/frame)', { timeout: 30_000 });
-  // …and the Codec 2 rung is still selectable by hand.
-  await page.click('.tier[data-key="basic"]');
-  await expect(page.locator('#stats-line')).toContainText('Codec 2 1400', { timeout: 10_000 });
-  await page.click('.tier[data-key="best"]');
+  // …and a heartbeat card goes on Pulse.
+  await page.click('.kind[data-kind="heartbeat"]');
+  await expect(page.locator('#stats-line')).toContainText('Pulse heartbeat codec', { timeout: 10_000 });
+  await page.click('.kind[data-kind="voice"]');
   await expect(page.locator('#stats-line')).toContainText('Mimi', { timeout: 10_000 });
 
   // Preview canvases (front + back) actually have card pixels.
   for (const id of ['#card-preview', '#front-preview']) {
-    const size = await page.locator(id).evaluate((c: HTMLCanvasElement) => ({
-      w: c.width,
-      h: c.height,
-    }));
+    const size = await page.locator(id).evaluate((c: HTMLCanvasElement) => ({ w: c.width, h: c.height }));
     expect(size.w).toBeGreaterThan(400);
     // Metal blanks (85.6 × 54 mm) are the default shape.
     expect(Math.abs(size.w / size.h - 85.6 / 53.98)).toBeLessThan(0.01);
@@ -64,7 +58,7 @@ test('generator: upload → stats → card preview → downloads enabled', async
 
   // The PNG is exactly card size at 1200 dpi, and says so, so laser software
   // imports it at 100% instead of guessing a DPI and leaving it to be scaled.
-  const [pngDownload] = await Promise.all([page.waitForEvent('download'), page.click('#dl-png')]);
+  const [pngDownload] = await Promise.all([page.waitForEvent('download'), page.click('#dl-back-png')]);
   const pngBytes = fs.readFileSync((await pngDownload.path())!);
   const png = PNG.sync.read(pngBytes);
   expect(png.width).toBe(Math.round((85.6 * 1200) / 25.4));
@@ -72,25 +66,40 @@ test('generator: upload → stats → card preview → downloads enabled', async
   expect(pngBytes.subarray(37, 41).toString('latin1')).toBe('pHYs'); // right after IHDR
   expect(pngBytes.readUInt32BE(41)).toBe(47244); // px per metre = 1200 dpi
 
-  // SVG downloads produce real card SVGs for both faces.
-  const [backDownload] = await Promise.all([
-    page.waitForEvent('download'),
-    page.click('#dl-svg'),
-  ]);
+  const [frontPng] = await Promise.all([page.waitForEvent('download'), page.click('#dl-front-png')]);
+  expect(frontPng.suggestedFilename()).toBe('momento-card-front.png');
+  expect(PNG.sync.read(fs.readFileSync((await frontPng.path())!)).width).toBe(png.width);
+
+  const [backDownload] = await Promise.all([page.waitForEvent('download'), page.click('#dl-svg')]);
   expect(backDownload.suggestedFilename()).toBe('momento-card-back.svg');
-  const [frontDownload] = await Promise.all([
-    page.waitForEvent('download'),
-    page.click('#dl-front-svg'),
-  ]);
+  const [frontDownload] = await Promise.all([page.waitForEvent('download'), page.click('#dl-front-svg')]);
   expect(frontDownload.suggestedFilename()).toBe('momento-card-front.svg');
+});
+
+test('generator: before any sound, the front is a live sample and nothing downloads', async ({ page }) => {
+  await page.goto('/momento/create/');
+  for (const id of ['#dl-front-png', '#dl-front-svg', '#dl-back-png', '#dl-svg', '#hear-card']) {
+    await expect(page.locator(id)).toBeDisabled();
+  }
+  await expect(page.locator('#card-summary')).toContainText('sample');
+  // Each kind offers its own two designs.
+  await expect(page.locator('.design')).toHaveCount(2);
+  await expect(page.locator('.design[data-design="wave"]')).toBeVisible();
+  await expect(page.locator('.design[data-design="ring"]')).toBeVisible();
+  await page.click('.kind[data-kind="heartbeat"]');
+  await expect(page.locator('.design[data-design="framed"]')).toBeVisible();
+  await expect(page.locator('.design[data-design="heartline"]')).toBeVisible();
+  await expect(page.locator('#photo-field')).toBeVisible();
+  await expect(page.locator('#voice-field')).toBeHidden();
 });
 
 test('generator: the card size setting reshapes both faces', async ({ page }) => {
   await page.goto('/momento/create/');
   await page.setInputFiles('#file-input', { name: 'fixture.wav', mimeType: 'audio/wav', buffer: wavFixture() });
-  await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 20_000 });
+  await backReady(page);
   const aspect = (id: string) => page.locator(id).evaluate((c: HTMLCanvasElement) => c.width / c.height);
   await expect.poll(() => aspect('#card-preview'), { timeout: 30_000 }).toBeCloseTo(85.6 / 53.98, 2);
+  await page.click('.settings summary');
   await page.selectOption('#size-select', 'paper');
   await expect.poll(() => aspect('#card-preview'), { timeout: 30_000 }).toBeCloseTo(88.9 / 50.8, 2);
   await expect.poll(() => aspect('#front-preview')).toBeCloseTo(88.9 / 50.8, 2);
@@ -124,42 +133,34 @@ const sampleBack = (page: import('@playwright/test').Page) =>
     return { darkFraction: dark / total, edgeFraction: edgeDark / edgeTotal };
   });
 
-test('generator: invert toggle inverts the codes but keeps the background white', async ({ page }) => {
+test('generator: black metal inverts the codes (background stays white) together with the photo', async ({ page }) => {
   await page.goto('/momento/create/');
-  await page.setInputFiles('#file-input', {
-    name: 'fixture.wav',
-    mimeType: 'audio/wav',
-    buffer: wavFixture(),
-  });
-  await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 20_000 });
+  await page.setInputFiles('#file-input', { name: 'fixture.wav', mimeType: 'audio/wav', buffer: wavFixture() });
+  await backReady(page);
   // Isolate the polarity change from the pixel field, which also adds ink.
+  await page.click('.settings summary');
   await page.uncheck('#texture-toggle');
   await page.waitForTimeout(700);
 
   const corner = () =>
-    page.locator('#card-preview').evaluate(
-      (c: HTMLCanvasElement) => c.getContext('2d')!.getImageData(0, 0, 1, 1).data[0]!,
-    );
-  const plain = await sampleBack(page);
-  expect(await corner()).toBeGreaterThan(200); // white background
-  await page.check('#invert-toggle');
-  await page.waitForTimeout(700); // debounce + re-render
+    page.locator('#card-preview').evaluate((c: HTMLCanvasElement) => c.getContext('2d')!.getImageData(0, 0, 1, 1).data[0]!);
+  // Black metal is the default: codes inverted, background white.
   const inverted = await sampleBack(page);
-  // Background stays white (only the marks get engraved)...
   expect(await corner()).toBeGreaterThan(200);
-  // ...while each QR flips to a dark plate with white modules, so the card
-  // gets substantially darker overall.
+  await lightCard(page);
+  await page.waitForTimeout(700);
+  const plain = await sampleBack(page);
+  expect(await corner()).toBeGreaterThan(200);
+  // Each QR on black is a dark plate with white modules: substantially more ink.
   expect(inverted.darkFraction).toBeGreaterThan(plain.darkFraction * 1.5);
 });
 
 test('generator: the pixel field fills the card edge to edge, and is optional', async ({ page }) => {
   await page.goto('/momento/create/');
-  await page.setInputFiles('#file-input', {
-    name: 'fixture.wav',
-    mimeType: 'audio/wav',
-    buffer: wavFixture(),
-  });
-  await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 20_000 });
+  await page.setInputFiles('#file-input', { name: 'fixture.wav', mimeType: 'audio/wav', buffer: wavFixture() });
+  await lightCard(page);
+  await backReady(page);
+  await page.waitForTimeout(700);
 
   // On by default: the card reports its extra engraved area and the outer edge
   // (bare stock on a plain back) now carries ink.
@@ -167,6 +168,7 @@ test('generator: the pixel field fills the card edge to edge, and is optional', 
   const textured = await sampleBack(page);
   expect(textured.edgeFraction).toBeGreaterThan(0.1);
 
+  await page.click('.settings summary');
   await page.uncheck('#texture-toggle');
   await page.waitForTimeout(700);
   await expect(page.locator('#stats-line')).not.toContainText('engraved area');
@@ -184,80 +186,47 @@ test('player: scan screen shows guidance when camera is unavailable', async ({ p
   await expect(page.locator('#upload')).toBeVisible();
 });
 
-test('player: photo of a Mimi card → neural decode → ready to play', async ({ page }) => {
+test('player: photo of an engraved black-metal voice card → Mimi decode → says it is a voice', async ({ page }) => {
   test.setTimeout(120_000);
-  // Generate a card (the default Best tier fits this clip) and capture its
-  // preview as a PNG "photo" — this exercises the full neural codec round
-  // trip: encode → QR card → scan → decode.
+  // Black metal is the default stock. The artwork's codes are inverted, so the
+  // photo is what the engraved card looks like: the artwork turned light-on-black.
   await page.goto('/momento/create/');
-  await page.setInputFiles('#file-input', {
-    name: 'fixture.wav',
-    mimeType: 'audio/wav',
-    buffer: wavFixture(),
-  });
-  await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 30_000 });
+  await page.setInputFiles('#file-input', { name: 'fixture.wav', mimeType: 'audio/wav', buffer: wavFixture() });
+  await backReady(page);
   await expect(page.locator('#stats-line')).toContainText('Mimi');
-  const dataUrl = await page
-    .locator('#card-preview')
-    .evaluate((c: HTMLCanvasElement) => c.toDataURL('image/png'));
-  const png = Buffer.from(dataUrl.split(',')[1]!, 'base64');
+  const png = await backPhoto(page);
 
-  // Feed that photo into the player's upload entry.
   await page.goto('/momento/');
   await expect(page.locator('#upload')).toBeVisible();
-  await page.locator('#stage input[type="file"]').setInputFiles({
-    name: 'card.png',
-    mimeType: 'image/png',
-    buffer: png,
-  });
+  await page.locator('#stage input[type="file"]').setInputFiles({ name: 'card.png', mimeType: 'image/png', buffer: png });
   await expect(page.locator('#play')).toBeVisible({ timeout: 30_000 });
   await expect(page.locator('#stage')).toContainText('rebuilt entirely from the card');
-  await expect(page.locator('#stage')).toContainText(/\d(\.\d)?s of audio/);
+  await expect(page.locator('#holds')).toContainText(/seconds of voice/);
 });
 
-test('player: photo of a Codec 2 card still decodes (wire v0 back-compat)', async ({ page }) => {
+test('player: photo of a heartbeat card → Pulse decode → says it is a heartbeat', async ({ page }) => {
   await page.goto('/momento/create/');
-  await page.setInputFiles('#file-input', {
-    name: 'fixture.wav',
-    mimeType: 'audio/wav',
-    buffer: wavFixture(),
-  });
-  await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 20_000 });
-  await page.click('.tier[data-key="basic"]');
-  await expect(page.locator('#stats-line')).toContainText('Codec 2 1400', { timeout: 10_000 });
-  const dataUrl = await page
-    .locator('#card-preview')
-    .evaluate((c: HTMLCanvasElement) => c.toDataURL('image/png'));
-  const png = Buffer.from(dataUrl.split(',')[1]!, 'base64');
+  await page.click('.kind[data-kind="heartbeat"]');
+  await page.setInputFiles('#file-input', { name: 'fixture.wav', mimeType: 'audio/wav', buffer: wavFixture() });
+  await backReady(page);
+  await expect(page.locator('#stats-line')).toContainText('Pulse heartbeat codec');
+  const png = await backPhoto(page);
 
+  // Nothing tells the player what kind of card this is — it reads it off the codes.
   await page.goto('/momento/');
-  await expect(page.locator('#upload')).toBeVisible();
-  await page.locator('#stage input[type="file"]').setInputFiles({
-    name: 'card.png',
-    mimeType: 'image/png',
-    buffer: png,
-  });
+  await page.locator('#stage input[type="file"]').setInputFiles({ name: 'card.png', mimeType: 'image/png', buffer: png });
   await expect(page.locator('#play')).toBeVisible({ timeout: 30_000 });
-  await expect(page.locator('#stage')).toContainText('rebuilt entirely from the card');
-  await expect(page.locator('#stage')).toContainText(/\d(\.\d)?s of audio/);
+  await expect(page.locator('#holds')).toContainText(/second heartbeat, rebuilt entirely from the card/);
 });
 
-test('generator: previewing a tier plays the card through the player pipeline', async ({ page }) => {
+test('generator: "Hear this card" plays the card through the player pipeline', async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto('/momento/create/');
-  await page.setInputFiles('#file-input', {
-    name: 'fixture.wav',
-    mimeType: 'audio/wav',
-    buffer: wavFixture(),
-  });
-  await expect(page.locator('#card-wrap')).toBeVisible({ timeout: 20_000 });
-
-  // Mimi preview = encode → decode (≈130 MB of models on a cold cache) →
-  // play, hence the generous window.
-  const tile = page.locator('.tier[data-key="best"]');
-  await tile.locator('[data-preview]').click();
-  await expect(tile.locator('[data-preview]')).toHaveText('■ Stop', { timeout: 40_000 });
-  await expect(tile.locator('[data-status]')).toContainText('Playing');
+  await page.setInputFiles('#file-input', { name: 'fixture.wav', mimeType: 'audio/wav', buffer: wavFixture() });
+  await backReady(page);
+  // Mimi decode (≈60 MB decoder on a cold cache) → play.
+  await page.click('#hear-card');
+  await expect(page.locator('#hear-card')).toHaveText('Playing…', { timeout: 40_000 });
 });
 
 test('generator: a shorter clip gets a deeper Mimi code stack', async ({ page }) => {

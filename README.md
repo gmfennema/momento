@@ -29,43 +29,44 @@ now serves only a redirect from there to the new domain (see
 
 ## How it works
 
-1. **Generator** (`/create/`): upload or record audio → conditioned for the codec
-   (high-pass, leading/trailing silence dropped, loudness normalized) →
-   trimmed to ≤10s → compressed in-browser with either
-   [Mimi](https://huggingface.co/kyutai/mimi) (Kyutai's neural speech codec,
-   24 kHz, run by onnxruntime-web) or the
-   [Codec 2](https://github.com/drowe67/codec2) vocoder (8 kHz) → split
-   into self-describing chunks → each chunk becomes a byte-mode QR code → laid out on a card image with one **entry QR** that carries the
+1. **Card station** (`/create/`): a five-step flow, with a live preview of the
+   card (shown as it will engrave, front and back) beside it.
+   1. *What the card holds* — a voice or a heartbeat. The choice sets the
+      codec: [Mimi](https://huggingface.co/kyutai/mimi) (Kyutai's neural speech
+      codec, 24 kHz, run by onnxruntime-web) for a voice, or Pulse (a small
+      noise vocoder built into the page, 16 kHz) for a doppler heartbeat.
+   2. *The sound* — upload or record (recording a heartbeat turns the
+      browser's noise suppression off, which would erase it) → conditioned
+      (high-pass, edge silence dropped, loudness normalized) → trimmed to ≤10 s.
+   3. *Design* — two fronts per kind, previewed with the real clip:
+      voice: **Classic wave** (title, mirrored waveform, one line of details) or
+      **Ring** (the waveform wrapped around an initial, details beside it);
+      heartbeat: **Framed** (the ultrasound scan in a frame beside a
+      heart-monitor trace) or **Heartline** (the scan fading in from the card's
+      edge). The trace follows the clip's detected beats and prints the heart
+      rate. The scan stays in the browser tab only.
+   4. *Details* — title, voice, date, the scan, and the **card stock**. Black
+      metal (the default) inverts the back's codes *and* engraves the scan as a
+      negative, together, so both read true once burned light on black.
+   5. *Engrave* — front and back as 1200 dpi PNG or SVG, exactly card size.
+
+   The back: the clip compressed → split into self-describing chunks → each
+   chunk a byte-mode QR code, laid out with one **entry QR** that carries the
    player URL. By default the back is **textured**: a field of dark/light cells
-   at the same module pitch as the codes fills the card edge to edge, so the
-   data codes read as buried in static while the entry code sits in a clean
-   window top-left (see [Card back texture](#card-back-texture)). Download as
-   high-DPI PNG or vector SVG, with an invert option
-   for black cards. The generator also renders a matching
-   **card front** — a monochrome, letterpress-style face with the card's title
-   across the top, the clip's waveform as fine mirrored bars, and a
-   clip-metadata line (voice · recorded date · duration) — downloadable as its
-   own PNG/SVG pair.
-   One ink on one stock, so the front prints, foils, or engraves with the
-   same setup as the back.
+   at the module pitch fills the card edge to edge, so the data codes read as
+   buried in static (see [Card back texture](#card-back-texture)). Every front
+   is solid black on white — titles in Cormorant Garamond, small caps in Jost
+   (even strokes and lining figures that survive engraving at 1.6 mm).
 2. **Player** (`/`): tap scan → the camera reads codes in any order (multiple
    per frame) with live progress → chunks are reassembled → the codec named in
-   the chunk headers decodes → Web Audio plays the sound. A Mimi card decodes
+   the chunk headers decodes → Web Audio plays the sound. The card itself says
+   what it holds, so the player tells a voice card from a heartbeat card with
+   no input from the listener. A Mimi card decodes
    straight to 24 kHz wideband voice (the ~60 MB decoder model is fetched on
    first use and cached; the scanner starts that download as soon as the first
-   code names the codec). Codec 2's 8 kHz
-   decode also gets a playback-side restoration before playback, at zero card
-   cost: the [LavaSR](https://github.com/ysharma3501/LavaSR) neural
-   speech-restoration model (fp16 ONNX, ~27 MB fetched on first use and
-   cached, run in-browser by onnxruntime-web) resynthesizes the frequencies
-   the narrowband format cannot carry, with a Linkwitz-Riley crossover
-   keeping the authentic decode below 3.6 kHz. Inference runs in a worker, so
-   the page keeps painting (and shows an elapsed-time counter) instead of
-   looking frozen, and it runs under a watchdog. When the model can't load or
-   doesn't finish — offline first scan, wasm failure, a dead worker —
-   playback falls back to a lightweight Web Audio polish: presence/high-shelf
-   EQ plus a harmonic exciter that regenerates the 4–7 kHz band from the
-   speech itself, and says so on the play screen. No camera handy (or
+   code names the codec). A Pulse card needs no download. There is never a
+   fallback: if a card's codec can't run, the player says so (and keeps the
+   scan for a retry) rather than playing something worse. No camera handy   speech itself, and says so on the play screen. No camera handy (or
    permission denied)? Upload photo(s) of the card instead — add shots until
    every square is captured.
 
@@ -76,8 +77,21 @@ between them is how well that budget is spent.
 
 | Tier | Codec | 10 s clip | Short clip (≤ 4.4 s) |
 |---|---|---|---|
-| Basic | Codec 2 1400 + neural restoration | 1.4 kbps | 1.4 kbps, bigger dots |
+| Heartbeat | Pulse noise vocoder | 1.4 kbps | 1.4 kbps, bigger dots |
 | Best (default) | Mimi, depth chosen per clip | 10 codes/frame, 1.38 kbps | 20 codes/frame, 2.75 kbps |
+
+The maker picks the tier — Best for a voice, Heartbeat for a heartbeat — and
+the card is always built with that pick, never swapped for the other. If it
+can't be built (the voice model won't load, or the clip is too long), the
+generator shows an error and no card.
+
+**Heartbeat is for doppler recordings.** A fetal heartbeat from an ultrasound or
+a home doppler is shaped noise — whooshes with sharp onset clicks and silent
+gaps, almost all between 150 Hz and 2.5 kHz. Speech codecs mangle it (Mimi
+paints a voice pitch through the whooshes and drops the clicks). Pulse
+(`src/lib/pulse.ts`) sends the clip's average spectrum once, loudness every
+10 ms and the spectral tilt every 20 ms, and rebuilds the sound from shaped
+noise. It is not for voices.
 
 **Best fills the card.** Mimi describes each 80 ms frame with a stack of up to
 32 eleven-bit codes, coarse to fine, and any prefix of the stack decodes. The
@@ -95,19 +109,17 @@ whisper, laughter — accents, and simulated phone recordings in a noisy room),
 | Original | 4.14 | 1.000 | — | 2.97 / — |
 | Mimi, 20 codes (≤ 4.4 s cards) | 4.03 | 0.991 | 2.8% | 2.84 / 10.6% |
 | Mimi, 10 codes (10 s cards) | 3.80 | 0.979 | 2.8% | 2.75 / 10.1% |
-| Lyra 3.2 kbps (former Best, ≤ 4.4 s) | 2.96 | 0.966 | 4.7% | 2.25 / 10.6% |
-| Codec 2 1400 + restoration (Basic) | 1.35 | 0.857 | 8.7% | 1.34 / 37.6% |
+| Lyra 3.2 kbps (retired, ≤ 4.4 s) | 2.96 | 0.966 | 4.7% | 2.25 / 10.6% |
+| Codec 2 1400 + restoration (retired) | 1.35 | 0.857 | 8.7% | 1.34 / 37.6% |
 
 UTMOS is a learned naturalness score (1–5; the hard set's originals score low
 because they are whispered, noisy, or reverberant); speaker similarity is
 WavLM-SV cosine; word error is Whisper small.en against its own transcript of
 the original. Mimi rows are the int8 models the site ships.
 
-Lyra 3.2 kbps and Codec 2 2400 were the middle rungs until Mimi beat both at
-every clip length; the generator no longer makes them, but the player still
-plays every card ever engraved — chunk headers carry a wire-format version
-(0 = Codec 2, 1 = Lyra, 2 = Mimi with its depth in the mode bits), and older
-cards' Base45 codes still read.
+Lyra and Codec 2 were prototype codecs, retired before any card shipped.
+Chunk headers carry a wire-format version: 2 = Mimi (depth in the mode bits),
+3 = Pulse; 0 and 1 (Codec 2, Lyra) are rejected.
 
 **No card is ever laid out below 0.32 mm modules.** That is a hard floor, not a
 warning: the generator reports the physical module (dot) size live, and a tier
@@ -121,8 +133,8 @@ instead of 10. In the simulated-engraving tests (`tests/burn.test.ts`) both
 layouts read every code across 0–0.16 mm of over-burn.
 
 Each tile also has a **▶ Preview** button (and the card panel a **▶ Hear this
-card**). Preview runs the *player's* pipeline — encode, decode, restoration and
-all — so you hear exactly what a scanned card will play, not an approximation
+card**). Preview runs the *player's* pipeline — encode and decode —
+so you hear exactly what a scanned card will play, not an approximation
 of it.
 
 ### Card back texture
@@ -149,13 +161,12 @@ blurred ~340 dpi render, and asserts every chunk still comes back.
 
 ### Cross-origin isolation
 
-The Lyra wasm (playback of older cards) uses threads, so it needs
-`SharedArrayBuffer`, which browsers only enable on cross-origin isolated pages;
-onnxruntime also uses threads there when it can. The dev/preview servers send
+onnxruntime (which runs Mimi) uses threads when it can, which needs
+`SharedArrayBuffer`, which browsers only enable on cross-origin isolated pages. The dev/preview servers send
 the COOP/COEP headers directly; on GitHub Pages (which can't set headers) the
 service worker injects them into document responses, and `main.ts` reloads
-once on the very first visit so isolation kicks in. Mimi and Codec 2 run
-without it, single-threaded.
+once on the very first visit so isolation kicks in. Without it Mimi runs
+single-threaded (slower).
 
 ## Engraving notes
 
@@ -190,7 +201,7 @@ without it, single-threaded.
 ## Development
 
 ```bash
-npm install        # also copies the zxing + lyra wasm into public/
+npm install        # also copies the zxing + onnxruntime wasm into public/
 npm run dev        # scanner at /, card station at /create/
 npm test           # unit + full-pipeline tests (node)
 npm run build      # typecheck + production build (base path /momento/; deploy uses /)
@@ -229,15 +240,8 @@ keeps resolving.
 
 ## Licenses
 
-App code is MIT. The Codec 2 WebAssembly artifacts in `public/codec2/` are
-LGPL 2.1 — see `public/codec2/NOTICE.md` for provenance and how to swap in
-your own build. The Lyra runtime copied to `public/lyra/` at install time is
-[lyra-codec](https://github.com/neuvideo/lyra-js) (ISC) wrapping
-[google/lyra](https://github.com/google/lyra) models (Apache 2.0) — see
-`public/lyra/NOTICE.md`. The Mimi models in `public/mimi/` are int8
+App code is MIT. The Mimi models in `public/mimi/` are int8
 conversions of [kyutai/mimi](https://huggingface.co/kyutai/mimi) (CC-BY-4.0)
-— see `public/mimi/NOTICE.md`. The neural enhancer models in `public/bwe/` are
-fp16 conversions of [LavaSR](https://github.com/ysharma3501/LavaSR) via
-[LavaSR-ONNX](https://github.com/Topping1/LavaSR-ONNX) (both Apache 2.0),
-run by [onnxruntime-web](https://github.com/microsoft/onnxruntime) (MIT)
-copied to `public/ort/` at install time — see `public/bwe/NOTICE.md`.
+— see `public/mimi/NOTICE.md` — run by
+[onnxruntime-web](https://github.com/microsoft/onnxruntime) (MIT), copied to
+`public/ort/` at install time.

@@ -1,7 +1,7 @@
 // Copy the onnxruntime-web wasm binary into public/ort/ so it is served
 // same-origin (no CDN at runtime, works offline once cached). Only the
 // threaded SIMD binary is needed: the emscripten glue is inlined in the JS
-// bundle (see lib/bwe.ts), and the same binary falls back to single-threaded
+// bundle (see lib/mimi.ts), and the same binary falls back to single-threaded
 // execution when SharedArrayBuffer is unavailable.
 import { copyFileSync, mkdirSync, rmSync } from 'node:fs';
 

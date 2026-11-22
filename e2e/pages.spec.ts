@@ -5,7 +5,7 @@
 // encode and playback after the first visit. `vite preview` sends real headers
 // everywhere, so only this server can catch that.
 import { expect, test, type Page } from '@playwright/test';
-import { wavFixture } from './fixtures';
+import { lightCard, wavFixture } from './fixtures';
 
 const PAGES = 'http://localhost:4174/momento/';
 
@@ -25,6 +25,7 @@ test('GitHub Pages: an isolated page still makes and plays a Mimi card', async (
 
   // Make a card: the generator encodes with Mimi in the onnxruntime worker.
   await page.setInputFiles('#file-input', { name: 'clip.wav', mimeType: 'audio/wav', buffer: wavFixture(3) });
+  await lightCard(page);
   await expect(page.locator('#stats-line')).toContainText('Mimi', { timeout: 90_000 });
   const card = await page
     .locator('#card-preview')

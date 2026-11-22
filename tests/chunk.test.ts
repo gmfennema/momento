@@ -4,14 +4,14 @@ import {
   decodeChunk,
   encodeChunk,
   splitPayload,
-  WIRE_CODEC2,
-  WIRE_LYRA,
+  WIRE_MIMI,
+  WIRE_PULSE,
   type CodecModeId,
 } from '../src/lib/chunk';
 
 describe('chunk header', () => {
   it('round-trips across versions, mode ids, and boundary indices', () => {
-    for (const version of [WIRE_CODEC2, WIRE_LYRA]) {
+    for (const version of [WIRE_PULSE]) {
       for (const modeId of [0, 2, 6, 7] as CodecModeId[]) {
         for (const [chunkIndex, totalChunks] of [
           [0, 1],
@@ -54,21 +54,21 @@ describe('split + collect', () => {
   it('reassembles shuffled chunks exactly', () => {
     const data = new Uint8Array(2000);
     crypto.getRandomValues(data);
-    const chunks = splitPayload(data, WIRE_LYRA, 0, 180, 0x1234);
+    const chunks = splitPayload(data, WIRE_PULSE, 0, 180, 0x1234);
     expect(chunks.length).toBe(Math.ceil(2000 / 180));
     const shuffled = [...chunks].sort(() => Math.random() - 0.5);
     const collector = new ChunkCollector();
     for (const c of shuffled) expect(collector.add(c)).toBe('new');
     expect(collector.complete).toBe(true);
     const { version, modeId, data: out } = collector.assemble();
-    expect(version).toBe(WIRE_LYRA);
+    expect(version).toBe(WIRE_PULSE);
     expect(modeId).toBe(0);
     expect(out).toEqual(data);
   });
 
   it('handles duplicates, wrong cards, and garbage', () => {
-    const a = splitPayload(new Uint8Array(100), WIRE_CODEC2, 0, 60, 1);
-    const b = splitPayload(new Uint8Array(100), WIRE_CODEC2, 0, 60, 2);
+    const a = splitPayload(new Uint8Array(100), WIRE_PULSE, 0, 60, 1);
+    const b = splitPayload(new Uint8Array(100), WIRE_PULSE, 0, 60, 2);
     const collector = new ChunkCollector();
     expect(collector.add(a[0]!)).toBe('new');
     expect(collector.add(a[0]!)).toBe('duplicate');
@@ -82,16 +82,23 @@ describe('split + collect', () => {
   });
 
   it('rejects chunks of a different wire version as wrong-card', () => {
-    const v0 = splitPayload(new Uint8Array(100), WIRE_CODEC2, 0, 60, 42);
-    const v1 = splitPayload(new Uint8Array(100), WIRE_LYRA, 0, 60, 42);
+    const v0 = splitPayload(new Uint8Array(100), WIRE_PULSE, 0, 60, 42);
+    const v1 = splitPayload(new Uint8Array(100), WIRE_MIMI, 7, 60, 42);
     const collector = new ChunkCollector();
     expect(collector.add(v0[0]!)).toBe('new');
     expect(collector.add(v1[1]!)).toBe('wrong-card');
   });
 
+  it('rejects the retired prototype formats (Codec 2 = 0, Lyra = 1)', () => {
+    for (const version of [0, 1]) {
+      const bytes = new Uint8Array([0x4d, version << 5, 1, 0, 0, 1, 9]);
+      expect(new ChunkCollector().add(bytes)).toBe('not-momento');
+    }
+  });
+
   it('single-chunk card works', () => {
     const data = new Uint8Array([9, 8, 7]);
-    const chunks = splitPayload(data, WIRE_CODEC2, 6, 500, 7);
+    const chunks = splitPayload(data, WIRE_PULSE, 0, 500, 7);
     expect(chunks.length).toBe(1);
     const collector = new ChunkCollector();
     collector.add(chunks[0]!);

@@ -3,17 +3,9 @@
 // States: IDLE → SCANNING | PHOTOS → DECODING → READY → PLAYING (+ CAMERA_DENIED).
 
 import { playPcm, type Playback } from '../lib/audio';
-import { warmUpNeuralBwe } from '../lib/bwe';
-import { CODEC2_SAMPLE_RATE } from '../lib/codec2';
-import { warmUpLyra } from '../lib/lyra';
 import { MimiDownloadError, MimiTimeoutError, warmUpMimi } from '../lib/mimi';
-import {
-  decodeForPlayback,
-  LyraUnavailableError,
-  UnknownLyraModeError,
-  type Restoration,
-} from '../lib/restore';
-import { ChunkCollector, WIRE_CODEC2, WIRE_LYRA, WIRE_MIMI } from '../lib/chunk';
+import { decodeForPlayback, UnknownCardError, type Restoration } from '../lib/restore';
+import { ChunkCollector, WIRE_MIMI, WIRE_PULSE } from '../lib/chunk';
 import { brandHeader } from '../lib/brand';
 import { scanPhoto, startScanner, type ScannerHandle } from './scanner';
 
@@ -30,8 +22,8 @@ export function mountPlayer(root: HTMLElement): void {
   let scanner: ScannerHandle | null = null;
   let playback: Playback | null = null;
   let pcm: Int16Array | null = null;
-  let pcmRate = CODEC2_SAMPLE_RATE;
-  let restoration: Restoration = 'lyra';
+  let pcmRate = 16000;
+  let restoration: Restoration = 'mimi';
 
   function makePhotoInput(onFiles: (files: File[]) => void): HTMLInputElement {
     const input = document.createElement('input');
@@ -48,13 +40,10 @@ export function mountPlayer(root: HTMLElement): void {
   }
 
   function updateProgress(count: HTMLElement, strip: HTMLElement, collector: ChunkCollector): void {
-    // The first chunk names the codec — fetch that codec's wasm + models
-    // (Mimi decoder ~60 MB, Lyra ~7 MB, neural enhancer ~27 MB) only for
-    // cards that actually use them, overlapping the download with the
-    // remaining scan.
+    // The first chunk names the codec — fetch the Mimi decoder (~60 MB) only
+    // for voice cards, overlapping the download with the remaining scan.
+    // Heartbeat cards need no download.
     if (collector.wireVersion === WIRE_MIMI) warmUpMimi('decoder');
-    else if (collector.wireVersion === WIRE_LYRA) warmUpLyra();
-    else if (collector.wireVersion === WIRE_CODEC2) warmUpNeuralBwe();
     const { got, total, missing } = collector.progress;
     count.textContent = total ? `${got} of ${total}` : 'Looking…';
     if (total && strip.childElementCount !== total) {
@@ -266,12 +255,15 @@ export function mountPlayer(root: HTMLElement): void {
 
   async function showDecoding(card: AssembledCard): Promise<void> {
     scanner = null;
-    stage.innerHTML = `<p class="hint">Rebuilding the audio from the card…</p>`;
+    // The card says what it holds: its format version names the codec, so a
+    // heartbeat card and a voice card each get their own words from here on.
+    stage.innerHTML = `<p class="hint">${
+      card.version === WIRE_PULSE ? 'Rebuilding the heartbeat from the card…' : 'Rebuilding the voice from the card…'
+    }</p>`;
     const note = stage.querySelector<HTMLElement>('.hint')!;
     try {
       const { version, modeId, data } = card;
-      // Same pipeline the generator previews with, watchdog included: a Codec 2
-      // card always gets a restoration, neural when it can finish, DSP when not.
+      // Same pipeline the generator previews with.
       const restored = await decodeForPlayback(version, modeId, data, (msg) => {
         note.textContent = msg;
       });
@@ -285,18 +277,11 @@ export function mountPlayer(root: HTMLElement): void {
       // for anyone debugging a phone over USB.
       console.error('Momento: could not rebuild the audio', e);
       clearStashedCard(); // the timeout branch below re-stashes; nothing else should resume
-      if (e instanceof UnknownLyraModeError) {
-        // A reserved Lyra mode from a future generator — decoding it as
-        // 3.2 kbps would play garbage, so be honest instead.
+      if (e instanceof UnknownCardError) {
+        // A format this build doesn't know — decoding it anyway would play
+        // garbage, so be honest instead.
         stage.innerHTML = `<div class="error">This card was made with a newer version of Momento — refresh this page and try again.</div>`;
         setTimeout(showIdle, 4000);
-        return;
-      }
-      if (e instanceof LyraUnavailableError) {
-        // Most likely the first-ever visit before the isolation service
-        // worker kicked in — a reload fixes that; a truly old browser won't.
-        stage.innerHTML = `<div class="error">This card's audio needs one more page reload to unlock — reload and scan again. If it keeps happening, update your browser.</div>`;
-        setTimeout(showIdle, 5000);
         return;
       }
       if (e instanceof MimiTimeoutError) {
@@ -322,6 +307,21 @@ export function mountPlayer(root: HTMLElement): void {
         stage.querySelector('#retry')!.addEventListener('click', () => void showDecoding(card));
         return;
       }
+      if (card.version === WIRE_MIMI) {
+        // The codes were read fine; the voice model itself failed (out of
+        // memory, a runtime that won't start). Never fall back to something
+        // that sounds worse — say so, keep the scan, and offer a retry.
+        stashCard(card);
+        stage.innerHTML = `<div class="error">The voice model couldn't run on this phone. Reload and try again — if it keeps failing, open this page in another browser.</div>
+          <button id="retry" class="primary">Reload and try again</button>
+          <button id="again">Scan another card</button>`;
+        stage.querySelector('#retry')!.addEventListener('click', () => location.reload());
+        stage.querySelector('#again')!.addEventListener('click', () => {
+          clearStashedCard();
+          showIdle();
+        });
+        return;
+      }
       stage.innerHTML = `<div class="error">Couldn't rebuild the audio — please rescan the card.</div>`;
       setTimeout(showIdle, 2500);
     }
@@ -329,12 +329,10 @@ export function mountPlayer(root: HTMLElement): void {
 
   function showReady(): void {
     const seconds = pcm ? (pcm.length / pcmRate).toFixed(1) : '?';
-    // Say when the voice came back the plain way, so a listener comparing two
-    // phones isn't left wondering why one sounds duller.
-    const fallbackNote =
-      restoration === 'dsp'
-        ? `<p class="hint">Neural restoration wasn't available on this device, so this is the standard restoration.</p>`
-        : '';
+    const holds =
+      restoration === 'pulse'
+        ? `A ${seconds}-second heartbeat, rebuilt entirely from the card.`
+        : `${seconds} seconds of voice, rebuilt entirely from the card.`;
     // CC-BY attribution for the model every Mimi listener downloads.
     const creditNote =
       restoration === 'mimi'
@@ -342,8 +340,7 @@ export function mountPlayer(root: HTMLElement): void {
         : '';
     stage.innerHTML = `
       <button class="big-play" id="play">▶</button>
-      <p class="hint">${seconds}s of audio, rebuilt entirely from the card.</p>
-      ${fallbackNote}
+      <p class="hint" id="holds">${holds}</p>
       ${creditNote}
       <button id="again">Scan another card</button>
     `;

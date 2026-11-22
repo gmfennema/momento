@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { PNG } from 'pngjs';
 import { prepareZXingModule, readBarcodes } from 'zxing-wasm/reader';
-import { wavFixture } from './fixtures';
+import { lightCard, wavFixture } from './fixtures';
 
 // A laser that burns wide leaves every dark dot thin. This is the card that
 // came back from a real engraver: the reader finds each code and fails its
@@ -62,12 +62,14 @@ test('player: reads a card whose dots the laser burned thin', async ({ page }) =
   test.setTimeout(120_000);
   await page.goto('/momento/create/');
   await page.setInputFiles('#file-input', { name: 'clip.wav', mimeType: 'audio/wav', buffer: wavFixture(10) });
+  await lightCard(page);
   await expect(page.locator('#stats-line')).toContainText('5 data codes', { timeout: 60_000 });
   const preview = (): Promise<string> =>
     page.locator('#card-preview').evaluate((c: HTMLCanvasElement) => c.toDataURL('image/png'));
 
   // Artwork with no compensation — what every card before this option was.
   const compensated = await preview();
+  await page.click('.settings summary');
   await page.selectOption('#burn-select', '0');
   await expect.poll(preview, { timeout: 15_000 }).not.toBe(compensated);
   const shot = engravedShot(PNG.sync.read(Buffer.from((await preview()).split(',')[1]!, 'base64')));

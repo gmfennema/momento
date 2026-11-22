@@ -13,10 +13,10 @@ prepareZXingModule({
 });
 import { describe, expect, it } from 'vitest';
 import { ChunkCollector, mimiModeId, splitPayload } from '../src/lib/chunk';
-import { codec2Decode, codec2Encode } from '../src/lib/codec2';
-import { bestTierThatFits, mimiDepthFor, planCard, TIERS, type CardSpec, type Tier } from '../src/lib/layout';
+import { mimiDepthFor, planCard, TIERS, type CardSpec, type Tier } from '../src/lib/layout';
 import { mimiPayloadBytes } from '../src/lib/mimi';
-import { chunkBytesFromScan, chunkMatrix, entryMatrix, legacyChunkMatrix } from '../src/lib/qr';
+import { pulseDecode, pulseEncode } from '../src/lib/pulse';
+import { chunkBytesFromScan, chunkMatrix, entryMatrix } from '../src/lib/qr';
 import { renderSvg, type RenderInput } from '../src/lib/render';
 import { rmsEnergy, synthPcm } from './helpers/synth-audio';
 
@@ -105,7 +105,7 @@ async function payloadFor(
   pcm: Int16Array,
   spec: CardSpec,
 ): Promise<{ bits: Uint8Array; modeId: number }> {
-  if (tier.codec === 'codec2') return { bits: await codec2Encode(tier.mode, pcm), modeId: tier.modeId };
+  if (tier.codec === 'pulse') return { bits: pulseEncode(pcm), modeId: tier.modeId };
   const depth = mimiDepthFor(10, spec)!;
   const bits = new Uint8Array(mimiPayloadBytes(125, depth));
   let seed = 0x12345678;
@@ -124,12 +124,12 @@ describe('end-to-end card pipeline', () => {
     { inverted: true, textured: true },
   ];
   for (const tier of TIERS) {
-    for (const { inverted, textured } of tier.key === 'best' ? variants : variants.slice(0, 2)) {
+    for (const { inverted, textured } of variants) {
       const label = [inverted ? 'inverted' : null, textured ? 'textured' : null]
         .filter(Boolean)
         .join(', ');
       it(`${tier.key}${label ? ` (${label})` : ''}: audio → card image → scanned → audio`, async () => {
-        const pcm = synthPcm(10);
+        const pcm = synthPcm(10, 16000);
         const { bits, modeId: wireMode } = await payloadFor(tier, pcm, { inverted, textured });
 
         const plan = planCard(bits.length, { inverted, textured });
@@ -158,9 +158,9 @@ describe('end-to-end card pipeline', () => {
         expect(modeId).toBe(wireMode);
         expect(data).toEqual(new Uint8Array(bits));
 
-        if (tier.codec === 'codec2') {
-          const out = await codec2Decode(tier.mode, data);
-          expect(Math.abs(out.length - pcm.length)).toBeLessThanOrEqual(800);
+        if (tier.codec === 'pulse') {
+          const out = pulseDecode(data);
+          expect(Math.abs(out.length - pcm.length)).toBeLessThanOrEqual(160);
           expect(rmsEnergy(out)).toBeGreaterThan(100);
         }
       }, 120_000);
@@ -172,14 +172,12 @@ describe('end-to-end card pipeline', () => {
   // that isn't held close, ≈3 camera pixels per module), soft, noisy and
   // low-contrast. At the old floor these cards came out at QR v11/0.30mm and
   // gave up nothing at this resolution; they need ~1000 px.
-  for (const allowMimi of [false, true]) {
+  for (const name of ['heartbeat', 'best'] as const) {
     for (const textured of [false, true]) {
-      const name = allowMimi ? 'best' : 'basic';
       it(`${name} at 10s${textured ? ' (textured)' : ''}: reads from a degraded 900px shot`, async () => {
         const spec = { inverted: false, textured };
-        const tier = bestTierThatFits(10, spec, allowMimi);
-        expect(tier.key).toBe(name);
-        const { bits, modeId } = await payloadFor(tier, synthPcm(10), spec);
+        const tier = TIERS.find((t) => t.key === name)!;
+        const { bits, modeId } = await payloadFor(tier, synthPcm(10, 16000), spec);
         const plan = planCard(bits.length, spec);
         const chunks = splitPayload(bits, tier.wireVersion, modeId, plan.payloadPerChunk, 0xc0de);
         const { texts, chunks: scanned } = await scanCardSvg(
@@ -230,31 +228,4 @@ describe('end-to-end card pipeline', () => {
       }, 120_000);
     }
   }
-
-  // Cards engraved before byte mode carry Base45 text; the player must keep
-  // reading them.
-  it('still reads a Base45 (pre-byte-mode) card', async () => {
-    const tier = TIERS.find((t) => t.key === 'basic')!;
-    const pcm = synthPcm(6);
-    const bits = await codec2Encode('1400', pcm);
-    // Old cards: alphanumeric capacity at v10 was 263 bytes per code.
-    const chunks = splitPayload(bits, tier.wireVersion, tier.modeId, 257, 0xbeef);
-    // Any grid with enough cells will do — render scales each symbol to its cell.
-    const roomy = planCard(bits.length * 2, { inverted: false });
-    const cells = roomy.cells.filter((c) => c.kind === 'entry' || c.index! < chunks.length);
-    expect(cells.length).toBe(chunks.length + 1);
-    const { texts, chunks: scanned } = await scanCardSvg(
-      renderSvg({
-        plan: { ...roomy, chunkCount: chunks.length, cells },
-        matrices: chunks.map((c) => legacyChunkMatrix(c, 10)),
-        entry: entryMatrix(PLAYER_URL),
-        inverted: false,
-      }),
-    );
-    expect(texts).toContain(PLAYER_URL);
-    const collector = new ChunkCollector();
-    for (const bytes of scanned) collector.add(bytes);
-    expect(collector.complete).toBe(true);
-    expect(collector.assemble().data).toEqual(bits);
-  }, 120_000);
 });

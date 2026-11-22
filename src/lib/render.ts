@@ -266,7 +266,10 @@ export function cardTexture(input: RenderInput): CardTexture | null {
   return { rects: textureRects(field), moduleMm: field.moduleMm, coverage: field.coverage };
 }
 
-const FONT_STACK = 'Helvetica, Arial, sans-serif';
+/** The same letterspaced caps face as the front's details (Jost, shipped
+ * with the station), so both faces read as one card. */
+const FONT_STACK = "Jost, 'Avenir Next', 'Helvetica Neue', Arial, sans-serif";
+const LABEL_TRACKING = 0.14;
 
 export function renderSvg(input: RenderInput): string {
   const { plan, inverted } = input;
@@ -320,8 +323,9 @@ export function renderSvg(input: RenderInput): string {
   if (label) {
     parts.push(
       `<text x="${fmt(entryGeom.labelXMm)}" y="${fmt(entryGeom.labelYMm)}" ` +
-        `font-family="${FONT_STACK}" font-size="${fmt(entryGeom.labelHeightMm)}" ` +
-        `font-weight="bold" text-anchor="middle" dominant-baseline="middle" ` +
+        `font-family="${FONT_STACK}" font-size="${fmt(entryGeom.labelHeightMm * 0.82)}" ` +
+        `font-weight="500" letter-spacing="${fmt(entryGeom.labelHeightMm * 0.82 * LABEL_TRACKING)}" ` +
+        `text-anchor="middle" dominant-baseline="middle" ` +
         `textLength="${fmt(entryGeom.labelWidthMm * 0.95)}" lengthAdjust="spacingAndGlyphs" ` +
         `fill="${fg}">${escapeXml(label)}</text>`,
     );
@@ -419,8 +423,12 @@ export function drawCard(
     ctx.fillStyle = fg;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.font = `bold ${entryGeom.labelHeightMm * pxPerMm}px ${FONT_STACK}`;
+    const size = entryGeom.labelHeightMm * 0.82;
+    ctx.font = `500 ${size * pxPerMm}px ${FONT_STACK}`;
+    ctx.letterSpacing = `${size * LABEL_TRACKING * pxPerMm}px`;
     const maxWidth = entryGeom.labelWidthMm * 0.95 * pxPerMm;
-    ctx.fillText(label, entryGeom.labelXMm * pxPerMm, entryGeom.labelYMm * pxPerMm, maxWidth);
+    // Tracking trails the last glyph; shift right by half to re-centre.
+    ctx.fillText(label, (entryGeom.labelXMm + (size * LABEL_TRACKING) / 2) * pxPerMm, entryGeom.labelYMm * pxPerMm, maxWidth);
+    ctx.letterSpacing = '0px';
   }
 }

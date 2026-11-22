@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { HEADER_BYTES } from '../src/lib/chunk';
 import {
-  bestTierThatFits,
   byteCapacityL,
   CARD_H_MM,
   CARD_W_MM,
@@ -9,6 +8,7 @@ import {
   MAX_SECONDS,
   maxChunkBytesForVersion,
   maxSecondsForTier,
+  tierFits,
   MIMI_MAX_DEPTH_ON_CARD,
   MIMI_MIN_DEPTH,
   mimiDepthFor,
@@ -42,7 +42,7 @@ describe('planCard', () => {
     });
   }
 
-  it('the basic tier at 10s stays at or above the 0.30mm scannability floor', () => {
+  it('the heartbeat tier at 10s stays at or above the 0.30mm scannability floor', () => {
     const plan = planCard(2000, { inverted: false });
     expect(plan.moduleMm).toBeGreaterThanOrEqual(0.3);
     expect(plan.warnings).not.toContain('module-below-0.30');
@@ -61,7 +61,7 @@ describe('planCard', () => {
   it('reports the longest clip each tier can hold', () => {
     // Mimi at its shallowest depth holds a full clip; the depth it actually
     // gets is the card's to choose (see the mimiDepthFor tests).
-    const expected: Record<string, number> = { best: 10, basic: 10 };
+    const expected: Record<string, number> = { best: 10, heartbeat: 10 };
     for (const textured of [false, true]) {
       const spec = { inverted: false, textured };
       for (const tier of TIERS) {
@@ -92,34 +92,26 @@ describe('planCard', () => {
     }
   });
 
-  it('picks Mimi for every clip length when the browser can run it', () => {
-    for (const textured of [false, true]) {
-      for (const seconds of [0.5, 4, 7, 10]) {
-        expect(bestTierThatFits(seconds, { inverted: false, textured }, true).codec).toBe('mimi');
+  it('both tiers fit every clip length up to 10 s, on both backs', () => {
+    for (const tier of TIERS) {
+      for (const textured of [false, true]) {
+        for (const seconds of [0.5, 4, 7, 10]) {
+          expect(tierFits(seconds, tier, { inverted: false, textured })).toBe(true);
+        }
       }
     }
   });
 
-  it('never picks Mimi when the browser cannot run it', () => {
-    for (const seconds of [1, 3, 5, 10]) {
-      expect(bestTierThatFits(seconds, { inverted: false }, false).codec).toBe('codec2');
-    }
-  });
-
   it('never hands back a card the UI would warn about', () => {
-    for (const textured of [false, true]) {
-      for (let tenths = 5; tenths <= 100; tenths++) {
-        const seconds = tenths / 10;
-        const spec = { inverted: false, textured };
-        const tier = bestTierThatFits(seconds, spec, true);
-        const plan = planCard(estimatePayloadBytes(seconds, tier), spec);
-        expect(plan.warnings).not.toContain('module-below-0.30');
-        expect(plan.warnings).not.toContain('module-below-0.25');
-        expect(plan.moduleMm).toBeGreaterThanOrEqual(MODULE_FLOOR_MM);
-        // …and no higher rung may also clear it.
-        for (const other of TIERS.slice(TIERS.indexOf(tier) + 1)) {
-          const alt = planCard(estimatePayloadBytes(seconds, other), spec);
-          expect(alt.moduleMm).toBeLessThan(MODULE_FLOOR_MM);
+    for (const tier of TIERS) {
+      for (const textured of [false, true]) {
+        for (let tenths = 5; tenths <= 100; tenths++) {
+          const seconds = tenths / 10;
+          const spec = { inverted: false, textured };
+          const plan = planCard(estimatePayloadBytes(seconds, tier), spec);
+          expect(plan.warnings).not.toContain('module-below-0.30');
+          expect(plan.warnings).not.toContain('module-below-0.25');
+          expect(plan.moduleMm).toBeGreaterThanOrEqual(MODULE_FLOOR_MM);
         }
       }
     }

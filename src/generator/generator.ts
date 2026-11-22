@@ -1,21 +1,17 @@
-// Generator (maker-facing) page: audio in → engravable card out.
-// Everything happens in this browser tab; the audio never leaves it.
+// The card station (maker-facing): sound in → engravable card out.
+// Everything happens in this browser tab; the audio and any photo never leave it.
+//
+// The flow is a sequence: what the card holds (a voice or a heartbeat) → the
+// sound → a design → the details → engrave. The kind decides the codec — Mimi
+// for a voice, Pulse for a heartbeat — and which two front designs are offered.
+// The card is always built with that codec; if it can't be, the station says
+// why and makes no card.
 
-import {
-  fileToFloat32,
-  pcmToWavBlob,
-  playPcm,
-  slicePcm,
-  MAX_SECONDS,
-  PCM_SAMPLE_RATE,
-  type Playback,
-} from '../lib/audio';
-import { warmUpNeuralBwe } from '../lib/bwe';
+import { fileToFloat32, pcmToWavBlob, playPcm, slicePcm, MAX_SECONDS, PCM_SAMPLE_RATE, type Playback } from '../lib/audio';
 import {
   MimiDownloadError,
   MimiTimeoutError,
   mimiFramesFor,
-  mimiPayloadBytes,
   mimiSupported,
   warmUpMimi,
   MIMI_CODE_BITS,
@@ -24,10 +20,8 @@ import {
 import { preparePcm } from '../lib/preprocess';
 import { randomCardId, splitPayload } from '../lib/chunk';
 import {
-  bestTierThatFits,
   CARD_SIZES,
   DEFAULT_CARD_SIZE,
-  estimatePayloadBytes,
   maxSecondsForTier,
   MIMI_MIN_DEPTH,
   mimiDepthForFrames,
@@ -35,33 +29,29 @@ import {
   planCard,
   tierFits,
   TIERS,
-  type CardPlan,
   type CardSizeKey,
   type CardSpec,
   type Tier,
 } from '../lib/layout';
 import { pngWithDpi } from '../lib/png';
-import {
-  decodeForPlayback,
-  encodeForTier,
-  modeIdForTier,
-  previewForTier,
-  type RestoredAudio,
-} from '../lib/restore';
+import { decodeForPlayback, encodeForTier, modeIdForTier, type RestoredAudio } from '../lib/restore';
 import { chunkMatrix, entryMatrix } from '../lib/qr';
 import {
   computeWaveformBars,
+  designsFor,
+  detectHeartbeat,
   drawFront,
-  FRONT_DESIGNS,
-  PHOTO_BAR_COUNT,
-  type FrontDesign,
-  type FrontPhoto,
+  FONT_FAMILIES,
   FRONT_BAR_COUNT,
+  FRONT_DESIGNS,
   renderFrontSvg,
+  RING_BAR_COUNT,
+  type FrontDesign,
   type FrontInput,
+  type FrontKind,
+  type FrontPhoto,
 } from '../lib/front';
 import { cardTexture, DEFAULT_BURN_MM, drawCard, renderSvg, type RenderInput } from '../lib/render';
-import { brandHeader } from '../lib/brand';
 import { decodePhoto, tonePhoto } from '../lib/photo';
 import { startRecording, type RecorderHandle } from './recorder';
 import { attachTrim, type TrimHandle, type TrimState } from './trim';
@@ -69,214 +59,263 @@ import { attachTrim, type TrimHandle, type TrimState } from './trim';
 const PNG_DPI = 1200;
 const PX_PER_MM = PNG_DPI / 25.4;
 
-/** Shown under a preview that came back from the DSP fallback rather than the
- * neural model — the same caveat the player shows a listener. */
-const DSP_NOTE = 'neural restoration unavailable here — this is the standard restoration';
+const MIMI_FAILED =
+  "The voice model couldn't run on this device. Reload the page and try again, or use another browser.";
+
+/** What the blank is made of. It decides both faces at once: on a black card
+ * the engraved marks come out light, so the back's codes are inverted (to scan
+ * as dark-on-light) and the front's photo is engraved as a negative (to read
+ * true). The vector marks on the front need nothing — they're meant to be light. */
+type Stock = 'black' | 'light';
+
+const TIER_FOR: Record<FrontKind, Tier['key']> = { voice: 'best', heartbeat: 'heartbeat' };
 
 interface State {
-  pcm: Int16Array | null;
-  trim: TrimState;
-  /** The maker's *preference*. The card uses it when the clip fits it and the
-   * next best fitting tier otherwise — nothing below the module floor is ever
-   * built, so a preference can be aspirational without producing a bad card. */
-  tierKey: Tier['key'];
-  /** the blank being engraved — sets the artwork's size and shape */
+  kind: FrontKind;
+  /** the design picked for each kind, so switching kinds and back keeps it */
+  design: Record<FrontKind, FrontDesign>;
+  stock: Stock;
   cardSize: CardSizeKey;
-  inverted: boolean;
   textured: boolean;
-  /** laser over-burn the artwork compensates for, mm per edge */
+  /** laser over-burn the back compensates for, mm per edge */
   burnMm: number;
   textLine: string;
   voice: string;
-  recordedAt: string; // 'YYYY-MM-DD' (front metadata line), '' if cleared
-  frontDesign: FrontDesign;
-  /** photo design: the chosen photo, decoded — memory only, never stored */
-  photoBitmap: ImageBitmap | null;
-  /** photo design: engrave the photo as a negative so it reads true on black */
-  photoNegative: boolean;
-  /** the toned photo for the current bitmap + polarity */
-  photo: FrontPhoto | null;
+  recordedAt: string;
   cardId: number;
-  // derived
+  pcm: Int16Array | null;
+  trim: TrimState;
+  photoBitmap: ImageBitmap | null;
+  /** the photo toned for the current stock */
+  photo: FrontPhoto | null;
+  // derived — the back, once encoded
   tier: Tier | null;
-  /** Mimi codes per frame the card carries (0 for Codec 2) */
   depth: number;
   encoded: Uint8Array | null;
-  plan: CardPlan | null;
   renderInput: RenderInput | null;
-  frontInput: FrontInput | null;
 }
 
-/** One encode of one trim window, plus the playback it restores to once the
- * maker has previewed it. Shared by the card pipeline and the tier previews so
- * neither pays for the other's work twice. */
 interface EncodeEntry {
   bytes: Uint8Array;
   restored?: RestoredAudio;
 }
 
+const VOICE_ICON = `<svg viewBox="0 0 48 24" aria-hidden="true">${[3, 7, 12, 6, 16, 20, 11, 18, 9, 14, 5, 10, 4]
+  .map((h, i) => `<rect x="${2 + i * 3.6}" y="${12 - h / 2}" width="1.6" height="${h}" rx="0.8"/>`)
+  .join('')}</svg>`;
+const HEART_ICON = `<svg viewBox="0 0 48 24" aria-hidden="true"><polyline points="1,14 12,14 15,11 18,14 21,14 23,16 26,3 29,19 31,14 35,14 38,10 41,14 47,14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+
 export function mountGenerator(root: HTMLElement): void {
+  document.body.classList.add('station');
+  const sizeOptions = (Object.keys(CARD_SIZES) as CardSizeKey[])
+    .map((k) => `<option value="${k}"${k === DEFAULT_CARD_SIZE ? ' selected' : ''}>${CARD_SIZES[k].label}</option>`)
+    .join('');
+
   root.innerHTML = `
-    ${brandHeader(
-      'Ten seconds of sound on a business card. The audio lives only in the engraving — no servers, no storage, no accounts.',
-    )}
+    <header class="st-head">
+      <span class="st-mark">Momento</span>
+      <span class="st-sub">Card station</span>
+    </header>
 
-    <div class="panel">
-      <h2>01 · Audio</h2>
-      <label class="dropzone" id="dropzone">
-        <input type="file" id="file-input" accept="audio/*,video/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.webm,.mp4,.mov" />
-        <div><strong>Drop an audio file</strong> or tap to browse</div>
-        <div class="hint">Supports MP3, WAV, M4A, AAC, OGG, FLAC, WebM (up to ${MAX_SECONDS} seconds)</div>
-      </label>
-      <div class="row" style="margin-top:0.9rem">
-        <button id="upload-btn" class="primary">Upload audio</button>
-        <button id="record-btn">Record</button>
-        <button id="preview-btn" disabled>Play original</button>
-        <button id="download-wav-btn" disabled>Download WAV</button>
-        <span class="hint" id="audio-status"></span>
-      </div>
-      <div id="trim-wrap" style="display:none; margin-top:0.75rem">
-        <canvas class="waveform" id="waveform"></canvas>
-        <div class="trim-hint" id="trim-hint"></div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <h2>02 · Voice quality</h2>
-      <p class="hint" style="margin-top:0">Best fills the card with as much voice detail as it can
-        hold — the shorter the clip, the more detail. No card ever gets dots smaller than
-        ${MODULE_FLOOR_MM.toFixed(2)}mm. Preview a tier to hear exactly what a scan will play.</p>
-      <div class="tiers" id="tiers"></div>
-    </div>
-
-    <div class="panel">
-      <h2>03 · The card</h2>
-      <div class="options">
-        <label>Card size
-          <select id="size-select">
-            ${(Object.keys(CARD_SIZES) as CardSizeKey[])
-              .map((k) => `<option value="${k}"${k === DEFAULT_CARD_SIZE ? ' selected' : ''}>${CARD_SIZES[k].label}</option>`)
-              .join('')}
-          </select>
-        </label>
-        <p class="hint" style="margin:0">Pick the blank you'll engrave — the two are different shapes,
-          so one can't be scaled onto the other. Downloads come out exactly card size: engrave them at
-          100%, never scaled to fit.</p>
-        <label><input type="checkbox" id="texture-toggle" checked /> Bury the codes in a pixel field (edge-to-edge texture)</label>
-        <label><input type="checkbox" id="invert-toggle" /> Invert QR codes for black cards (background stays white)</label>
-        <label>Laser over-burn
-          <select id="burn-select">
-            <option value="0">None — dots exactly as drawn</option>
-            <option value="0.04">Fine beam · 0.04 mm</option>
-            <option value="0.08" selected>Typical · 0.08 mm</option>
-            <option value="0.12">Wide beam · 0.12 mm</option>
-          </select>
-        </label>
-        <p class="hint" style="margin:0">A laser burns slightly wider than the artwork, which thins the
-          dots it leaves behind until phones can't read them. The card is drawn to cancel that out —
-          if your engraved dots still look thin next to the gaps between them, go up a step.</p>
-        <label>Front design
-          <select id="front-design">
-            ${(Object.keys(FRONT_DESIGNS) as FrontDesign[])
-              .map((k) => `<option value="${k}">${FRONT_DESIGNS[k]}</option>`)
-              .join('')}
-          </select>
-        </label>
-        <div id="photo-opts" class="options" style="display:none; flex-basis:100%">
-          <input type="file" id="photo-input" accept="image/*" hidden />
-          <button id="photo-btn">Choose photo</button>
-          <span class="hint" id="photo-status" style="flex-basis:auto">No photo yet — it stays in this browser tab only.</span>
-          <label><input type="checkbox" id="photo-negative" checked /> Black card (photo becomes a negative so it engraves true)</label>
-          <p class="hint" style="margin:0">Laser software engraves the dark parts of the artwork, and on black
-            metal those come out light — so for a black card the photo is drawn as a negative. Untick for
-            light cards or printing. Let your laser software dither the photo (e.g. Jarvis or Stucki).</p>
+    <main class="st-grid">
+      <section class="st-stage" aria-label="Card preview">
+        <div class="stage-card" id="stage-card" data-stock="black" data-face="front">
+          <div class="flip">
+            <canvas class="face face-front" id="front-preview" aria-label="Front of the card"></canvas>
+            <div class="face face-back">
+              <canvas id="card-preview" aria-label="Back of the card"></canvas>
+              <p class="back-empty" id="back-empty">The codes that hold the sound appear here once you add it.</p>
+            </div>
+          </div>
         </div>
-        <label>Title (front) <input type="text" id="text-line" placeholder="e.g. For Mom" maxlength="40" /></label>
-        <label>Voice <input type="text" id="voice-line" placeholder="e.g. Emma" maxlength="24" /></label>
-        <label>Recorded <input type="date" id="recorded-date" /></label>
-      </div>
-      <div id="card-wrap" style="display:none; margin-top:0.9rem">
-        <div class="card-face-label">Front</div>
-        <canvas class="card-preview" id="front-preview"></canvas>
-        <div class="card-face-label" style="margin-top:0.9rem">Back</div>
-        <canvas class="card-preview" id="card-preview"></canvas>
-        <div class="stats-line" id="stats-line"></div>
+        <div class="stage-bar">
+          <div class="seg" role="group" aria-label="Card face">
+            <button type="button" data-face="front" aria-pressed="true">Front</button>
+            <button type="button" data-face="back" aria-pressed="false">Back</button>
+          </div>
+          <button type="button" class="btn-quiet" id="hear-card" disabled>Hear this card</button>
+        </div>
+        <p class="stage-summary" id="card-summary">A sample of the front. Add a sound to make it yours.</p>
+        <div id="error-box" role="alert"></div>
         <div id="warnings"></div>
-        <div class="row" style="margin-top:0.8rem">
-          <button class="primary" id="dl-front-png">Front PNG (${PNG_DPI} dpi)</button>
-          <button class="primary" id="dl-front-svg">Front SVG</button>
-          <button class="primary" id="dl-png">Back PNG (${PNG_DPI} dpi)</button>
-          <button class="primary" id="dl-svg">Back SVG (vector)</button>
-          <button id="hear-card">▶ Hear this card</button>
-          <button id="test-scan">I want to test-scan it</button>
-        </div>
-        <div class="hint" id="test-hint" style="display:none">
-          Open <strong>${playerUrl()}</strong> on your phone (or scan the card's entry code)
-          and point the camera at this screen or a printout.
-        </div>
-      </div>
-      <div id="error-box"></div>
-    </div>
+      </section>
 
-    <footer>
-      Audio is compressed entirely in your browser with
+      <div class="st-steps">
+        <section class="step" aria-labelledby="h-kind">
+          <h2 id="h-kind"><span class="n">1</span>What will the card hold?</h2>
+          <div class="kinds" role="radiogroup" aria-labelledby="h-kind">
+            <button type="button" class="kind" role="radio" data-kind="voice" aria-checked="true">
+              ${VOICE_ICON}
+              <strong>A voice</strong>
+              <span>A message or a laugh, in someone's own voice. Up to ${MAX_SECONDS} seconds.</span>
+            </button>
+            <button type="button" class="kind" role="radio" data-kind="heartbeat" aria-checked="false">
+              ${HEART_ICON}
+              <strong>A heartbeat</strong>
+              <span>A baby's heartbeat from an ultrasound or a home doppler, with the scan on the front.</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="step" aria-labelledby="h-sound">
+          <h2 id="h-sound"><span class="n">2</span>The sound</h2>
+          <label class="drop" id="dropzone">
+            <input type="file" id="file-input" accept="audio/*,video/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.webm,.mp4,.mov" />
+            <span class="drop-main" id="drop-main">Drop an audio or video file here, or choose one</span>
+            <span class="drop-sub" id="drop-sub">MP3, M4A, WAV and most phone recordings work.</span>
+          </label>
+          <div class="row">
+            <button type="button" class="btn" id="record-btn">Record</button>
+            <button type="button" class="btn" id="preview-btn" disabled>Play the clip</button>
+            <span class="status" id="audio-status"></span>
+          </div>
+          <div id="trim-wrap" hidden>
+            <canvas class="trim" id="waveform" aria-label="Drag to choose which part goes on the card"></canvas>
+            <p class="note" id="trim-hint"></p>
+          </div>
+        </section>
+
+        <section class="step" aria-labelledby="h-design">
+          <h2 id="h-design"><span class="n">3</span>Design</h2>
+          <div class="designs" id="designs" role="radiogroup" aria-labelledby="h-design"></div>
+        </section>
+
+        <section class="step" aria-labelledby="h-details">
+          <h2 id="h-details"><span class="n">4</span>Details</h2>
+          <div class="fields">
+            <label class="field field-wide">
+              <span>Title</span>
+              <input type="text" id="text-line" maxlength="40" placeholder="For Mom" autocomplete="off" />
+            </label>
+            <label class="field" id="voice-field">
+              <span>Whose voice</span>
+              <input type="text" id="voice-line" maxlength="24" placeholder="Emma" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>Recorded</span>
+              <input type="date" id="recorded-date" />
+            </label>
+            <div class="field field-wide" id="photo-field" hidden>
+              <span>Ultrasound scan</span>
+              <div class="photo-pick">
+                <input type="file" id="photo-input" accept="image/*" hidden />
+                <button type="button" class="btn" id="photo-btn">Choose the scan</button>
+                <span class="status" id="photo-status">A photo of the printout works. It stays in this tab.</span>
+              </div>
+            </div>
+            <div class="field field-wide">
+              <span id="stock-label">Card</span>
+              <div class="seg seg-wide" role="radiogroup" aria-labelledby="stock-label">
+                <button type="button" data-stock="black" role="radio" aria-checked="true">Black metal</button>
+                <button type="button" data-stock="light" role="radio" aria-checked="false">Light card or print</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="step" aria-labelledby="h-engrave">
+          <h2 id="h-engrave"><span class="n">5</span>Engrave</h2>
+          <p class="note">Each file comes out exactly card size. Engrave at 100%, never scaled to fit.</p>
+          <div class="downloads">
+            <button type="button" class="btn btn-ink" id="dl-front-png" disabled>Front PNG</button>
+            <button type="button" class="btn btn-ink" id="dl-back-png" disabled>Back PNG</button>
+            <button type="button" class="btn" id="dl-front-svg" disabled>Front SVG</button>
+            <button type="button" class="btn" id="dl-svg" disabled>Back SVG</button>
+          </div>
+          <p class="note" id="download-note"></p>
+          <details class="settings">
+            <summary>Engraving settings</summary>
+            <div class="fields">
+              <label class="field field-wide">
+                <span>Blank</span>
+                <select id="size-select">${sizeOptions}</select>
+              </label>
+              <label class="field field-wide">
+                <span>Laser over-burn</span>
+                <select id="burn-select">
+                  <option value="0">None: dots exactly as drawn</option>
+                  <option value="0.04">Fine beam, 0.04 mm</option>
+                  <option value="0.08" selected>Typical, 0.08 mm</option>
+                  <option value="0.12">Wide beam, 0.12 mm</option>
+                </select>
+              </label>
+              <label class="check field-wide">
+                <input type="checkbox" id="texture-toggle" checked />
+                <span>Hide the codes in a pixel field that runs edge to edge</span>
+              </label>
+            </div>
+            <p class="note">A laser burns a little wider than the artwork, which thins the dots it leaves
+              until phones can't read them. The back is drawn to cancel that out. If your engraved dots
+              still look thin next to the gaps between them, go up a step.</p>
+            <p class="tech" id="stats-line"></p>
+            <div class="row">
+              <button type="button" class="btn btn-small" id="download-wav-btn" disabled>Download the clip (WAV)</button>
+              <button type="button" class="btn btn-small" id="test-scan">Test-scan from this screen</button>
+            </div>
+            <p class="note" id="test-hint" hidden>Open <strong>${playerUrl()}</strong> on your phone and point it at
+              the back of the card on this screen.</p>
+          </details>
+        </section>
+      </div>
+    </main>
+
+    <footer class="st-foot">
+      Voices are compressed in your browser with
       <a href="https://huggingface.co/kyutai/mimi" target="_blank" rel="noreferrer">Mimi</a>
-      (<a href="${import.meta.env.BASE_URL}mimi/NOTICE.md" target="_blank">CC-BY-4.0 notice</a>) or
-      <a href="https://github.com/drowe67/codec2" target="_blank" rel="noreferrer">Codec 2</a>
-      (<a href="${import.meta.env.BASE_URL}codec2/NOTICE.md" target="_blank">LGPL 2.1 notice</a>).
-      Downloads are exactly card size — engrave at 100%, do not rescale.
+      (<a href="${import.meta.env.BASE_URL}mimi/NOTICE.md" target="_blank">CC-BY-4.0 notice</a>);
+      heartbeats with a small codec built into this page. Nothing is uploaded.
     </footer>
   `;
 
   const $ = <T extends HTMLElement>(id: string): T => root.querySelector<T>(`#${id}`)!;
-  // Mimi (the "Best" tier) runs on onnxruntime's wasm build; where that can't
-  // run, Codec 2 is the only rung.
   const mimiOk = mimiSupported();
   const state: State = {
-    pcm: null,
-    trim: { startSec: 0, endSec: 0 },
-    tierKey: 'best',
+    kind: 'voice',
+    design: { voice: 'wave', heartbeat: 'framed' },
+    stock: 'black',
     cardSize: DEFAULT_CARD_SIZE,
-    inverted: false,
     textured: true,
     burnMm: DEFAULT_BURN_MM,
     textLine: '',
     voice: '',
     recordedAt: todayIso(),
-    frontDesign: 'wave',
-    photoBitmap: null,
-    photoNegative: true,
-    photo: null,
     cardId: randomCardId(),
+    pcm: null,
+    trim: { startSec: 0, endSec: 0 },
+    photoBitmap: null,
+    photo: null,
     tier: null,
     depth: 0,
     encoded: null,
-    plan: null,
     renderInput: null,
-    frontInput: null,
   };
 
   let playback: Playback | null = null;
   let recorder: RecorderHandle | null = null;
-  // Tier-preview playback state (see startPreview): declared up here because
-  // the first renderTiers() runs while the tiles are being built.
-  let previewBusyKey: Tier['key'] | null = null;
-  let previewPlaying: { key: Tier['key']; playback: Playback } | null = null;
-  let previewSeq = 0;
   let trimHandle: TrimHandle | null = null;
   let encodeSeq = 0;
   let debounceTimer = 0;
-  let pcmEpoch = 0; // bumped when a new clip loads, invalidating the encode cache
+  let pcmEpoch = 0;
+  let hearing = false;
   const encodeCache = new Map<string, EncodeEntry>();
 
-  function cacheKey(tier: Tier, depth: number): string {
-    return `${tier.key}|${depth}|${pcmEpoch}|${state.trim.startSec}|${state.trim.endSec}`;
+  // --- small helpers ---
+
+  const tier = (): Tier => TIERS.find((t) => t.key === TIER_FOR[state.kind])!;
+  const design = (): FrontDesign => state.design[state.kind];
+  const cardDims = () => CARD_SIZES[state.cardSize];
+
+  function cardSpec(): CardSpec {
+    const { widthMm, heightMm } = cardDims();
+    return { widthMm, heightMm, inverted: state.stock === 'black', textured: state.textured };
+  }
+
+  function cacheKey(t: Tier, depth: number): string {
+    return `${t.key}|${depth}|${pcmEpoch}|${state.trim.startSec}|${state.trim.endSec}`;
   }
 
   function rememberEncode(key: string, entry: EncodeEntry): void {
     encodeCache.set(key, entry);
-    // Dragging the trim window mints a new key per pointer move; keep only the
-    // last few so a long session doesn't hold on to every encode ever made.
     while (encodeCache.size > 8) {
       const oldest = encodeCache.keys().next().value;
       if (oldest === undefined) break;
@@ -284,69 +323,263 @@ export function mountGenerator(root: HTMLElement): void {
     }
   }
 
-  // --- audio input ---
+  function clipFrames(): number {
+    if (!state.pcm) return 0;
+    const a = Math.max(0, Math.floor(state.trim.startSec * PCM_SAMPLE_RATE));
+    const b = Math.min(state.pcm.length, Math.ceil(state.trim.endSec * PCM_SAMPLE_RATE));
+    return mimiFramesFor(b - a);
+  }
+
+  function depthFor(t: Tier): number {
+    if (t.codec !== 'mimi') return 0;
+    return mimiDepthForFrames(clipFrames(), cardSpec()) ?? MIMI_MIN_DEPTH;
+  }
+
+  function setError(msg: string | null): void {
+    const box = $('error-box');
+    box.textContent = '';
+    if (msg) {
+      const div = document.createElement('div');
+      div.className = 'error';
+      div.textContent = msg;
+      box.appendChild(div);
+    }
+  }
+
+  // --- the front: always live, a sample until there's a sound ---
+
+  function frontInput(d: FrontDesign = design()): FrontInput {
+    const { widthMm, heightMm, cornerMm } = cardDims();
+    const heart = FRONT_DESIGNS[d].kind === 'heartbeat';
+    const count = d === 'ring' ? RING_BAR_COUNT : FRONT_BAR_COUNT;
+    const slice = state.pcm ? slicePcm(state.pcm, state.trim.startSec, state.trim.endSec) : null;
+    return {
+      design: d,
+      bars: slice ? computeWaveformBars(slice, count) : sampleBars(count),
+      photo: heart ? (state.photo ?? undefined) : undefined,
+      heartbeat: heart ? (slice ? (detectHeartbeat(slice, PCM_SAMPLE_RATE) ?? undefined) : SAMPLE_HEARTBEAT) : undefined,
+      textLine: state.textLine.trim() || (state.pcm ? undefined : heart ? 'Baby Grace' : 'For Mom'),
+      voice: heart ? undefined : state.voice.trim() || undefined,
+      recordedAt: state.recordedAt || undefined,
+      durationSec: slice ? slice.length / PCM_SAMPLE_RATE : 8,
+      widthMm,
+      heightMm,
+      cornerMm,
+    };
+  }
+
+  /** Front downloads need a real sound, and a heartbeat design needs its scan. */
+  function frontReady(): boolean {
+    return !!state.pcm && (state.kind === 'voice' || !!state.photo);
+  }
+
+  const stageCard = $('stage-card');
+  const frontCanvas = $<HTMLCanvasElement>('front-preview');
+  const backCanvas = $<HTMLCanvasElement>('card-preview');
+
+  /** Preview resolution: crisp on a retina screen at the stage's size, and
+   * never under 18 px/mm — enough for a phone to test-scan the back straight
+   * off this screen (≈6 px per 0.33 mm dot). */
+  function stagePxPerMm(): number {
+    const cssW = Math.max(320, stageCard.clientWidth || 560);
+    return Math.max(18, Math.min(28, (cssW * Math.min(2, window.devicePixelRatio || 1)) / cardDims().widthMm));
+  }
+
+  function drawStageFront(): void {
+    const { widthMm, heightMm } = cardDims();
+    const ppm = stagePxPerMm();
+    frontCanvas.width = Math.round(widthMm * ppm);
+    frontCanvas.height = Math.round(heightMm * ppm);
+    drawFront(frontCanvas.getContext('2d')!, frontInput(), ppm);
+  }
+
+  function drawStageBack(): void {
+    const has = !!state.renderInput;
+    backCanvas.hidden = !has;
+    $('back-empty').hidden = has;
+    if (!state.renderInput) return;
+    const { plan } = state.renderInput;
+    const ppm = stagePxPerMm();
+    backCanvas.width = Math.round(plan.widthMm * ppm);
+    backCanvas.height = Math.round(plan.heightMm * ppm);
+    drawCard(backCanvas.getContext('2d')!, state.renderInput, ppm);
+  }
+
+  function shapeStage(): void {
+    const { widthMm, heightMm, cornerMm } = cardDims();
+    stageCard.style.setProperty('--ar', `${widthMm} / ${heightMm}`);
+    stageCard.style.setProperty(
+      '--radius',
+      cornerMm ? `${((cornerMm / widthMm) * 100).toFixed(2)}% / ${((cornerMm / heightMm) * 100).toFixed(2)}%` : '2px',
+    );
+    stageCard.dataset.stock = state.stock;
+    $('designs').dataset.stock = state.stock;
+  }
+
+  function renderDesigns(): void {
+    const box = $('designs');
+    box.textContent = '';
+    const { widthMm, heightMm } = cardDims();
+    for (const d of designsFor(state.kind)) {
+      const meta = FRONT_DESIGNS[d];
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'design';
+      btn.dataset.design = d;
+      btn.setAttribute('role', 'radio');
+      btn.setAttribute('aria-checked', String(design() === d));
+      const thumb = document.createElement('canvas');
+      const ppm = 7;
+      thumb.width = Math.round(widthMm * ppm);
+      thumb.height = Math.round(heightMm * ppm);
+      thumb.style.aspectRatio = `${widthMm} / ${heightMm}`;
+      drawFront(thumb.getContext('2d')!, frontInput(d), ppm);
+      const label = document.createElement('strong');
+      label.textContent = meta.label;
+      const blurb = document.createElement('span');
+      blurb.textContent = meta.blurb;
+      btn.append(thumb, label, blurb);
+      btn.addEventListener('click', () => {
+        state.design[state.kind] = d;
+        refreshFront();
+      });
+      box.appendChild(btn);
+    }
+  }
+
+  function updateDownloads(): void {
+    const front = frontReady();
+    const back = !!state.renderInput;
+    $<HTMLButtonElement>('dl-front-png').disabled = !front;
+    $<HTMLButtonElement>('dl-front-svg').disabled = !front;
+    $<HTMLButtonElement>('dl-back-png').disabled = !back;
+    $<HTMLButtonElement>('dl-svg').disabled = !back;
+    $<HTMLButtonElement>('hear-card').disabled = !back || hearing;
+    $('download-note').textContent = !state.pcm
+      ? 'Add the sound first.'
+      : state.kind === 'heartbeat' && !state.photo
+        ? 'Add the ultrasound scan to download the front.'
+        : back
+          ? ''
+          : 'Building the back…';
+  }
+
+  function updateSummary(): void {
+    const el = $('card-summary');
+    const plan = state.renderInput?.plan;
+    if (!state.pcm) {
+      el.textContent = 'A sample of the front. Add a sound to make it yours.';
+    } else if (!plan) {
+      el.textContent = 'Building the codes for the back…';
+    } else {
+      const seconds = (state.trim.endSec - state.trim.startSec).toFixed(1);
+      const what = state.kind === 'voice' ? 'of voice' : 'of heartbeat';
+      el.textContent =
+        `${seconds} seconds ${what} in ${plan.chunkCount} codes, with ${plan.moduleMm.toFixed(2)} mm dots. ` +
+        (state.stock === 'black' ? 'Shown as it engraves on black metal.' : 'Shown as it engraves on a light card.');
+    }
+  }
+
+  /** Front-only changes — text, design, photo — redraw without re-encoding. */
+  function refreshFront(): void {
+    shapeStage();
+    drawStageFront();
+    renderDesigns();
+    updateDownloads();
+  }
+
+  function refreshAll(): void {
+    refreshFront();
+    drawStageBack();
+    updateSummary();
+    updateStats();
+  }
+
+  // --- kind ---
+
+  function setKind(kind: FrontKind): void {
+    if (state.kind === kind) return;
+    state.kind = kind;
+    for (const b of root.querySelectorAll<HTMLButtonElement>('.kind')) {
+      b.setAttribute('aria-checked', String(b.dataset.kind === kind));
+    }
+    const heart = kind === 'heartbeat';
+    $('voice-field').hidden = heart;
+    // With no voice field beside it, the date takes the full row.
+    $('recorded-date').closest('.field')!.classList.toggle('field-wide', heart);
+    $('photo-field').hidden = !heart;
+    $<HTMLInputElement>('text-line').placeholder = heart ? 'Baby Grace' : 'For Mom';
+    $('drop-main').textContent = heart
+      ? 'Drop the heartbeat recording here, or choose it'
+      : 'Drop an audio or video file here, or choose one';
+    $('drop-sub').textContent = heart
+      ? 'From the ultrasound visit or a home doppler. Most phone recordings work.'
+      : 'MP3, M4A, WAV and most phone recordings work.';
+    if (kind === 'voice' && state.pcm && mimiOk) warmUpMimi('encoder');
+    // The back belongs to the old kind's codec until the new encode lands.
+    clearBack();
+    refreshAll();
+    scheduleUpdate();
+  }
+  for (const b of root.querySelectorAll<HTMLButtonElement>('.kind')) {
+    b.addEventListener('click', () => setKind(b.dataset.kind as FrontKind));
+  }
+
+  // --- face toggle ---
+
+  for (const b of root.querySelectorAll<HTMLButtonElement>('[data-face]')) {
+    b.addEventListener('click', () => {
+      stageCard.dataset.face = b.dataset.face!;
+      for (const o of root.querySelectorAll<HTMLButtonElement>('button[data-face]')) {
+        o.setAttribute('aria-pressed', String(o === b));
+      }
+    });
+  }
+
+  // --- audio in ---
 
   const dropzone = $('dropzone');
   const fileInput = $<HTMLInputElement>('file-input');
-  const uploadBtn = $<HTMLButtonElement>('upload-btn');
-  const downloadWavBtn = $<HTMLButtonElement>('download-wav-btn');
-
-  uploadBtn.addEventListener('click', () => {
-    fileInput.click();
-  });
-
-  downloadWavBtn.addEventListener('click', () => {
-    if (!state.pcm) return;
-    const sliced = slicePcm(state.pcm, state.trim.startSec, state.trim.endSec);
-    const wavBlob = pcmToWavBlob(sliced, PCM_SAMPLE_RATE);
-    downloadBlob(wavBlob, 'converted-audio.wav');
-  });
 
   async function loadBlob(blob: Blob, fileName?: string): Promise<void> {
     setError(null);
-    $('audio-status').textContent = 'Decoding audio file…';
+    $('audio-status').textContent = 'Reading the file…';
     try {
       const f32 = await fileToFloat32(blob);
-      // Condition the clip for the vocoders: high-pass, drop edge silence
-      // (silence costs card space at a fixed bitrate), normalize loudness.
       const prepared = preparePcm(f32, PCM_SAMPLE_RATE);
       const durationSec = prepared.pcm.length / PCM_SAMPLE_RATE;
       if (durationSec < 0.3) throw new Error('That clip is too short.');
-      const trimmed = prepared.trimmedLeadSec + prepared.trimmedTailSec;
-      stopPreview();
+      const dropped = prepared.trimmedLeadSec + prepared.trimmedTailSec;
+      stopHearing();
       state.pcm = prepared.pcm;
       state.cardId = randomCardId();
       pcmEpoch++;
       encodeCache.clear();
-      // Start the download the preferred tier's card build needs now (Mimi's
-      // ~73 MB encoder, or the 27 MB restoration model a Basic preview plays
-      // through). Anything else loads when a preview or a fallback asks for it.
-      if (state.tierKey === 'best' && mimiOk) warmUpMimi('encoder');
-      else warmUpNeuralBwe();
-      const label = fileName ? `${fileName} (${durationSec.toFixed(1)}s)` : `${durationSec.toFixed(1)}s loaded`;
-      $('audio-status').textContent =
-        label + (trimmed >= 0.3 ? ` (dropped ${trimmed.toFixed(1)}s of silence)` : '');
-      const wrap = $('trim-wrap');
-      wrap.style.display = 'block';
-      const canvas = $<HTMLCanvasElement>('waveform');
-      trimHandle = attachTrim(canvas, prepared.pcm, (t) => {
+      if (state.kind === 'voice' && mimiOk) warmUpMimi('encoder');
+      const label = fileName ? `${fileName}, ${durationSec.toFixed(1)} s` : `${durationSec.toFixed(1)} s recorded`;
+      $('audio-status').textContent = label + (dropped >= 0.3 ? ` (${dropped.toFixed(1)} s of silence dropped)` : '');
+      $('trim-wrap').hidden = false;
+      trimHandle = attachTrim($<HTMLCanvasElement>('waveform'), prepared.pcm, (t) => {
         state.trim = t;
         updateTrimHint();
+        refreshFront();
         scheduleUpdate();
       });
       state.trim = trimHandle.state;
       updateTrimHint();
       $<HTMLButtonElement>('preview-btn').disabled = false;
-      downloadWavBtn.disabled = false;
+      $<HTMLButtonElement>('download-wav-btn').disabled = false;
+      clearBack();
+      refreshAll();
       scheduleUpdate();
     } catch (e) {
       state.pcm = null;
       $('audio-status').textContent = '';
-      downloadWavBtn.disabled = true;
+      $<HTMLButtonElement>('download-wav-btn').disabled = true;
       setError(
         e instanceof Error && e.message.includes('short')
           ? e.message
-          : 'Could not decode that file. Try a common format (mp3, m4a, wav, ogg, flac, webm).',
+          : "That file couldn't be read. Try an MP3, M4A, WAV, OGG, FLAC or WebM file.",
       );
     }
   }
@@ -354,22 +587,21 @@ export function mountGenerator(root: HTMLElement): void {
   function updateTrimHint(): void {
     const dur = state.pcm ? state.pcm.length / PCM_SAMPLE_RATE : 0;
     const sel = state.trim.endSec - state.trim.startSec;
-    // A short clip can also end up with a window on it — trimming to fit a
-    // denser tier is exactly that.
     $('trim-hint').textContent =
       sel < dur - 0.05
-        ? `Selected ${sel.toFixed(1)}s of ${dur.toFixed(1)}s — drag the window (or its edges) to choose what goes on the card.`
-        : `Whole clip (${dur.toFixed(1)}s) goes on the card.`;
+        ? `${sel.toFixed(1)} of ${dur.toFixed(1)} seconds go on the card. Drag the window, or its edges, to choose which.`
+        : `The whole clip, ${dur.toFixed(1)} seconds, goes on the card.`;
   }
 
   fileInput.addEventListener('change', () => {
     const f = fileInput.files?.[0];
+    fileInput.value = '';
     if (f) void loadBlob(f, f.name);
   });
   for (const ev of ['dragover', 'dragleave', 'drop'] as const) {
     dropzone.addEventListener(ev, (e) => {
       e.preventDefault();
-      dropzone.classList.toggle('dragover', ev === 'dragover');
+      dropzone.classList.toggle('over', ev === 'dragover');
       if (ev === 'drop') {
         const f = (e as DragEvent).dataTransfer?.files?.[0];
         if (f) void loadBlob(f, f.name);
@@ -384,312 +616,99 @@ export function mountGenerator(root: HTMLElement): void {
       return;
     }
     try {
-      recorder = await startRecording((ms) => {
-        recordBtn.textContent = `Stop · ${Math.min(MAX_SECONDS, ms / 1000).toFixed(1)}s`;
-      });
+      recorder = await startRecording(
+        (ms) => {
+          recordBtn.textContent = `Stop, ${Math.min(MAX_SECONDS, ms / 1000).toFixed(1)} s`;
+        },
+        { raw: state.kind === 'heartbeat' },
+      );
       recordBtn.classList.add('recording');
-      recordBtn.textContent = 'Stop · 0.0s';
+      recordBtn.textContent = 'Stop, 0.0 s';
       const blob = await recorder.blob;
       recorder = null;
       recordBtn.classList.remove('recording');
       recordBtn.textContent = 'Record';
-      await loadBlob(blob, 'Microphone Recording');
+      await loadBlob(blob);
     } catch {
       recorder = null;
       recordBtn.classList.remove('recording');
       recordBtn.textContent = 'Record';
-      setError('Microphone access was denied.');
+      setError('The microphone is blocked. Allow it in the browser, or choose a file instead.');
     }
   });
 
   $('preview-btn').addEventListener('click', () => {
     if (!state.pcm) return;
-    stopPreview();
+    stopHearing();
     playback?.stop();
     playback = playPcm(slicePcm(state.pcm, state.trim.startSec, state.trim.endSec));
   });
 
-  // --- tiers ---
-
-  interface Tile {
-    tier: Tier;
-    el: HTMLElement;
-    stats: HTMLElement;
-    note: HTMLElement;
-    previewBtn: HTMLButtonElement;
-    trimBtn: HTMLButtonElement;
-    status: HTMLElement;
-  }
-
-  const tiersEl = $('tiers');
-  const tiles = new Map<Tier['key'], Tile>();
-  for (const tier of TIERS) {
-    // A plain <div>: the tile carries its own buttons, and a button inside a
-    // button is neither valid HTML nor parseable the way it reads.
-    const el = document.createElement('div');
-    el.className = 'tier';
-    el.dataset.key = tier.key;
-    el.setAttribute('role', 'button');
-    el.tabIndex = 0;
-    el.innerHTML = `
-      <div class="name">${tier.label}</div>
-      <div class="blurb">${tier.blurb}</div>
-      <div class="stats" data-stats>—</div>
-      <div class="tier-note" data-note></div>
-      <div class="preview-row">
-        <button class="small" data-preview disabled>▶ Preview</button>
-        <button class="small" data-trim style="display:none">Trim</button>
-        <span class="hint" data-status></span>
-      </div>
-    `;
-    const tile: Tile = {
-      tier,
-      el,
-      stats: el.querySelector<HTMLElement>('[data-stats]')!,
-      note: el.querySelector<HTMLElement>('[data-note]')!,
-      previewBtn: el.querySelector<HTMLButtonElement>('[data-preview]')!,
-      trimBtn: el.querySelector<HTMLButtonElement>('[data-trim]')!,
-      status: el.querySelector<HTMLElement>('[data-status]')!,
-    };
-    if (tier.codec === 'mimi' && !mimiOk) {
-      el.setAttribute('aria-disabled', 'true');
-      el.title = 'This browser cannot run the Mimi codec.';
-    }
-    const choose = (): void => {
-      if (el.classList.contains('unavailable')) return; // trim it first
-      state.tierKey = tier.key;
-      renderTiers();
-      scheduleUpdate();
-    };
-    el.addEventListener('click', choose);
-    el.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        choose();
-      }
-    });
-    tile.previewBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      void startPreview(tier);
-    });
-    tile.trimBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      trimToFit(tier);
-    });
-    tiersEl.appendChild(el);
-    tiles.set(tier.key, tile);
-  }
-
-  // The single card spec used for tier decisions, tier stats, AND the real
-  // plan — if these diverged (e.g. one forgot that a textured back lays the
-  // codes out differently), a tier could be offered whose final plan renders
-  // below the scannability floor.
-  function cardSpec(): CardSpec {
-    const { widthMm, heightMm } = CARD_SIZES[state.cardSize];
-    return { widthMm, heightMm, inverted: state.inverted, textured: state.textured };
-  }
-
-  function preferredTier(): Tier {
-    return TIERS.find((t) => t.key === state.tierKey)!;
-  }
-
-  /** The tier the card is actually built with: the preference when this clip
-   * fits it, the best fitting rung otherwise. */
-  function effectiveTier(seconds: number): Tier {
-    const pref = preferredTier();
-    const usable = pref.codec !== 'mimi' || mimiOk;
-    if (usable && tierFits(seconds, pref, cardSpec())) return pref;
-    return bestTierThatFits(seconds, cardSpec(), mimiOk);
-  }
-
-  /** Mimi codes per frame for this clip on this card (0 for Codec 2): the
-   * deepest stack that keeps the card above the module floor. */
-  function depthFor(tier: Tier): number {
-    if (tier.codec !== 'mimi') return 0;
-    return mimiDepthForFrames(clipFrames(), cardSpec()) ?? MIMI_MIN_DEPTH;
-  }
-
-  /** Mimi frames in the exact samples slicePcm will hand the encoder — not the
-   * trim duration, which can be a sample or two shorter and a frame fewer. */
-  function clipFrames(): number {
-    if (!state.pcm) return 0;
-    const a = Math.max(0, Math.floor(state.trim.startSec * PCM_SAMPLE_RATE));
-    const b = Math.min(state.pcm.length, Math.ceil(state.trim.endSec * PCM_SAMPLE_RATE));
-    return mimiFramesFor(b - a);
-  }
-
-  /** Bytes the card will actually carry — exact for Mimi (its depth is chosen
-   * per clip), the planner's one-frame-slack estimate for Codec 2. */
-  function payloadBytes(tier: Tier, seconds: number): number {
-    return tier.codec === 'mimi'
-      ? mimiPayloadBytes(clipFrames(), depthFor(tier))
-      : estimatePayloadBytes(seconds, tier);
-  }
-
-  /** Shrink the trim window to the longest clip this tier can hold, and adopt
-   * the tier — the button exists precisely to unlock it. */
-  function trimToFit(tier: Tier): void {
-    if (!state.pcm || !trimHandle) return;
-    const maxSec = maxSecondsForTier(tier, cardSpec());
-    if (maxSec <= 0) return;
-    const duration = state.pcm.length / PCM_SAMPLE_RATE;
-    state.tierKey = tier.key;
-    trimHandle.set(state.trim.startSec, Math.min(state.trim.startSec + maxSec, duration));
-    updateTrimHint();
-    renderTiers();
-    scheduleUpdate();
-  }
-
-  function renderTiers(): void {
-    const spec = cardSpec();
-    const seconds = state.pcm ? state.trim.endSec - state.trim.startSec : null;
-    let effective: Tier | null = null;
-    if (seconds !== null) {
-      try {
-        effective = effectiveTier(seconds);
-      } catch {
-        effective = null; // nothing fits — the error surfaces from update()
-      }
-    }
-    const pref = preferredTier();
-    const prefUsable = pref.codec !== 'mimi' || mimiOk;
-
-    for (const tile of tiles.values()) {
-      const { tier } = tile;
-      const usable = tier.codec !== 'mimi' || mimiOk;
-      const maxSec = usable ? maxSecondsForTier(tier, spec) : 0;
-      const fits = usable && (seconds === null || tierFits(seconds, tier, spec));
-      const selected = effective !== null && effective.key === tier.key;
-      tile.el.classList.toggle('unavailable', !fits);
-      tile.el.classList.toggle('selected', selected);
-
-      if (!usable) {
-        tile.stats.textContent = 'not available in this browser';
-      } else if (seconds === null) {
-        tile.stats.textContent = `fits up to ${maxSec.toFixed(1)}s`;
-      } else if (fits) {
-        const plan = planCard(payloadBytes(tier, seconds), spec);
-        const detail = tier.codec === 'mimi' ? ` · detail ${depthFor(tier)}/20` : '';
-        tile.stats.textContent =
-          `${plan.chunkCount} codes · ${plan.moduleMm.toFixed(2)}mm dots${detail} · fits up to ${maxSec.toFixed(1)}s`;
-      } else {
-        tile.stats.textContent = `needs ≤ ${maxSec.toFixed(1)}s — this clip is ${seconds.toFixed(1)}s`;
-      }
-
-      // Explain a silently-downgraded selection on the tile doing the work.
-      const overridden = selected && pref.key !== tier.key;
-      tile.note.textContent = !overridden
-        ? ''
-        : prefUsable
-          ? `${pref.label} needs ≤ ${maxSecondsForTier(pref, spec).toFixed(1)}s — using ${tier.label} for this clip.`
-          : `${pref.label} isn't available in this browser — using ${tier.label}.`;
-
-      const canTrim = !fits && usable && seconds !== null && maxSec > 0;
-      tile.trimBtn.style.display = canTrim ? '' : 'none';
-      if (canTrim) tile.trimBtn.textContent = `Trim to ${maxSec.toFixed(1)}s`;
-
-      const playing = previewPlaying?.key === tier.key;
-      tile.previewBtn.disabled =
-        !playing && (!state.pcm || !fits || previewBusyKey !== null);
-    }
-  }
-  renderTiers();
-
-  // --- tier preview: encode → decode → restore → play, exactly as a scan does ---
-
-  function stopPreview(): void {
-    previewSeq++;
-    previewBusyKey = null;
-    const current = previewPlaying;
-    previewPlaying = null;
-    if (!current) return;
-    current.playback.stop();
-    const tile = tiles.get(current.key);
-    if (tile) tile.previewBtn.textContent = '▶ Preview';
-  }
-
-  async function startPreview(tier: Tier): Promise<void> {
-    const tile = tiles.get(tier.key);
-    if (!tile || !state.pcm) return;
-    if (previewPlaying?.key === tier.key) {
-      stopPreview();
-      tile.status.textContent = '';
-      renderTiers();
-      return;
-    }
-    // One sound at a time: a second preview (or the original) would just be
-    // noise over the first.
-    stopPreview();
-    playback?.stop();
-    playback = null;
-    const seq = ++previewSeq;
-    previewBusyKey = tier.key;
-    renderTiers();
-    const setStatus = (msg: string): void => {
-      if (seq === previewSeq) tile.status.textContent = msg;
-    };
-    try {
-      const depth = depthFor(tier);
-      const key = cacheKey(tier, depth);
-      const cached = encodeCache.get(key);
-      let restored = cached?.restored;
-      if (!restored) {
-        if (cached?.bytes) {
-          // The card pipeline already paid for this encode; only the playback
-          // side is missing.
-          restored = await decodeForPlayback(
-            tier.wireVersion,
-            modeIdForTier(tier, depth),
-            cached.bytes,
-            setStatus,
-          );
-          rememberEncode(key, { bytes: cached.bytes, restored });
-        } else {
-          const slice = slicePcm(state.pcm, state.trim.startSec, state.trim.endSec);
-          const result = await previewForTier(tier, slice, depth, setStatus);
-          restored = {
-            pcm: result.pcm,
-            sampleRate: result.sampleRate,
-            restoration: result.restoration,
-          };
-          rememberEncode(key, { bytes: result.bytes, restored });
-        }
-      }
-      if (seq !== previewSeq) return;
-      const audio = restored;
-      tile.previewBtn.textContent = '■ Stop';
-      setStatus(audio.restoration === 'dsp' ? `Playing… — ${DSP_NOTE}` : 'Playing…');
-      const pb = playPcm(audio.pcm, audio.sampleRate);
-      previewPlaying = { key: tier.key, playback: pb };
-      void pb.done.then(() => {
-        if (previewPlaying?.playback !== pb) return;
-        previewPlaying = null;
-        tile.previewBtn.textContent = '▶ Preview';
-        setStatus(audio.restoration === 'dsp' ? DSP_NOTE : '');
-        renderTiers();
-      });
-    } catch {
-      setStatus('Preview failed on this device.');
-    } finally {
-      if (previewBusyKey === tier.key) previewBusyKey = null;
-      renderTiers();
-      updateStatsLine();
-    }
-  }
-
-  $('hear-card').addEventListener('click', () => {
-    if (!state.tier) return;
-    void startPreview(state.tier);
+  $('download-wav-btn').addEventListener('click', () => {
+    if (!state.pcm) return;
+    const sliced = slicePcm(state.pcm, state.trim.startSec, state.trim.endSec);
+    downloadBlob(pcmToWavBlob(sliced, PCM_SAMPLE_RATE), 'momento-clip.wav');
   });
 
-  // --- options ---
+  // --- details ---
+
+  $<HTMLInputElement>('text-line').addEventListener('input', (e) => {
+    state.textLine = (e.target as HTMLInputElement).value;
+    refreshFront();
+  });
+  $<HTMLInputElement>('voice-line').addEventListener('input', (e) => {
+    state.voice = (e.target as HTMLInputElement).value;
+    refreshFront();
+  });
+  const recordedInput = $<HTMLInputElement>('recorded-date');
+  recordedInput.value = state.recordedAt;
+  recordedInput.addEventListener('input', (e) => {
+    state.recordedAt = (e.target as HTMLInputElement).value;
+    refreshFront();
+  });
+
+  const photoInput = $<HTMLInputElement>('photo-input');
+  $('photo-btn').addEventListener('click', () => photoInput.click());
+  photoInput.addEventListener('change', async () => {
+    const file = photoInput.files?.[0];
+    photoInput.value = '';
+    if (!file) return;
+    try {
+      const bitmap = await decodePhoto(file);
+      state.photoBitmap?.close();
+      state.photoBitmap = bitmap;
+      state.photo = tonePhoto(bitmap, state.stock === 'black');
+      $('photo-status').textContent = 'Scan added. It stays in this tab.';
+      $('photo-btn').textContent = 'Choose a different scan';
+      setError(null);
+      refreshFront();
+    } catch {
+      setError("That photo couldn't be read. Try a JPEG or PNG.");
+    }
+  });
+
+  for (const b of root.querySelectorAll<HTMLButtonElement>('button[data-stock]')) {
+    b.addEventListener('click', () => {
+      const stock = b.dataset.stock as Stock;
+      if (stock === state.stock) return;
+      state.stock = stock;
+      for (const o of root.querySelectorAll<HTMLButtonElement>('button[data-stock]')) {
+        o.setAttribute('aria-checked', String(o === b));
+      }
+      // Both faces follow the stock together: the photo's negative and the
+      // codes' inversion are one decision.
+      if (state.photoBitmap) state.photo = tonePhoto(state.photoBitmap, stock === 'black');
+      refreshFront();
+      updateSummary();
+      scheduleUpdate();
+    });
+  }
+
+  // --- engraving settings ---
 
   $<HTMLSelectElement>('size-select').addEventListener('change', (e) => {
     state.cardSize = (e.target as HTMLSelectElement).value as CardSizeKey;
-    scheduleUpdate();
-  });
-  $<HTMLInputElement>('invert-toggle').addEventListener('change', (e) => {
-    state.inverted = (e.target as HTMLInputElement).checked;
+    refreshFront();
     scheduleUpdate();
   });
   $<HTMLSelectElement>('burn-select').addEventListener('change', (e) => {
@@ -700,289 +719,252 @@ export function mountGenerator(root: HTMLElement): void {
     state.textured = (e.target as HTMLInputElement).checked;
     scheduleUpdate();
   });
-  $<HTMLInputElement>('text-line').addEventListener('input', (e) => {
-    state.textLine = (e.target as HTMLInputElement).value;
-    scheduleUpdate();
-  });
-  $<HTMLInputElement>('voice-line').addEventListener('input', (e) => {
-    state.voice = (e.target as HTMLInputElement).value;
-    scheduleUpdate();
-  });
-  const recordedInput = $<HTMLInputElement>('recorded-date');
-  recordedInput.value = state.recordedAt; // default to today
-  recordedInput.addEventListener('input', (e) => {
-    state.recordedAt = (e.target as HTMLInputElement).value;
-    scheduleUpdate();
-  });
-  const photoInput = $<HTMLInputElement>('photo-input');
-  $<HTMLSelectElement>('front-design').addEventListener('change', (e) => {
-    state.frontDesign = (e.target as HTMLSelectElement).value as FrontDesign;
-    $('photo-opts').style.display = state.frontDesign === 'photo' ? 'flex' : 'none';
-    refreshFront();
-  });
-  $('photo-btn').addEventListener('click', () => photoInput.click());
-  photoInput.addEventListener('change', async () => {
-    const file = photoInput.files?.[0];
-    photoInput.value = '';
-    if (!file) return;
-    try {
-      const bitmap = await decodePhoto(file);
-      state.photoBitmap?.close();
-      state.photoBitmap = bitmap;
-      state.photo = tonePhoto(bitmap, state.photoNegative);
-      $('photo-status').textContent = `${file.name} (${bitmap.width}×${bitmap.height}) — kept in this tab only`;
-      setError(null);
-      refreshFront();
-    } catch {
-      setError("Couldn't read that photo. Try a JPEG or PNG.");
-    }
-  });
-  $<HTMLInputElement>('photo-negative').addEventListener('change', (e) => {
-    state.photoNegative = (e.target as HTMLInputElement).checked;
-    if (state.photoBitmap) state.photo = tonePhoto(state.photoBitmap, state.photoNegative);
-    refreshFront();
-  });
-
-  /** Front-only changes (design, photo) redraw without touching the encode. */
-  function refreshFront(): void {
-    if (!state.pcm || !state.plan) return;
-    state.frontInput = buildFrontInput(state.plan);
-    renderPreview();
-  }
-
-  function buildFrontInput(plan: CardPlan): FrontInput {
-    const pcm = state.pcm!;
-    const photoDesign = state.frontDesign === 'photo';
-    // The front shows the same slice of audio the back encodes, and carries
-    // all the human-facing type — the back is codes and "SCAN TO LISTEN".
-    return {
-      design: state.frontDesign,
-      photo: photoDesign ? (state.photo ?? undefined) : undefined,
-      bars: computeWaveformBars(
-        slicePcm(pcm, state.trim.startSec, state.trim.endSec),
-        photoDesign ? PHOTO_BAR_COUNT : FRONT_BAR_COUNT,
-      ),
-      textLine: state.textLine.trim() || undefined,
-      voice: state.voice.trim() || undefined,
-      recordedAt: state.recordedAt || undefined,
-      durationSec: state.trim.endSec - state.trim.startSec,
-      widthMm: plan.widthMm,
-      heightMm: plan.heightMm,
-      cornerMm: CARD_SIZES[state.cardSize].cornerMm,
-    };
-  }
-
   $('test-scan').addEventListener('click', () => {
     const h = $('test-hint');
-    h.style.display = h.style.display === 'none' ? 'block' : 'none';
+    h.hidden = !h.hidden;
   });
 
-  // --- pipeline: encode → plan → render ---
+  // --- the back: encode → plan → codes ---
+
+  function clearBack(): void {
+    state.renderInput = null;
+    state.encoded = null;
+    state.tier = null;
+    drawStageBack();
+    updateDownloads();
+  }
 
   function scheduleUpdate(): void {
     clearTimeout(debounceTimer);
-    debounceTimer = window.setTimeout(() => void update(), 300);
-    renderTiers();
+    debounceTimer = window.setTimeout(() => void update(), 250);
   }
 
   async function update(): Promise<void> {
     if (!state.pcm) return;
     const seq = ++encodeSeq;
     setError(null);
+    updateSummary();
     try {
+      const t = tier();
       const seconds = state.trim.endSec - state.trim.startSec;
-      const tier = effectiveTier(seconds);
-      const depth = depthFor(tier);
-      // Encoding depends only on the clip, trim window, tier, and depth —
-      // reuse the last result when only card options (text line, invert)
-      // changed, so typing a caption doesn't re-run neural-codec inference per
-      // keystroke.
-      const key = cacheKey(tier, depth);
+      if (t.codec === 'mimi' && !mimiOk) {
+        throw new Error("This browser can't run the voice model. Open this page in an up-to-date Chrome, Safari or Firefox.");
+      }
+      if (!tierFits(seconds, t, cardSpec())) {
+        throw new Error(`This card holds up to ${maxSecondsForTier(t, cardSpec()).toFixed(1)} seconds. Trim the clip to fit.`);
+      }
+      const depth = depthFor(t);
+      const key = cacheKey(t, depth);
       let encoded = encodeCache.get(key)?.bytes;
       if (!encoded) {
         const pcm = slicePcm(state.pcm, state.trim.startSec, state.trim.endSec);
-        encoded = await encodeForTier(tier, pcm, depth);
-        if (seq !== encodeSeq) return; // superseded
+        try {
+          encoded = await encodeForTier(t, pcm, depth);
+        } catch (err) {
+          if (t.codec === 'mimi' && !(err instanceof MimiTimeoutError || err instanceof MimiDownloadError)) {
+            throw new Error(MIMI_FAILED, { cause: err });
+          }
+          throw err;
+        }
+        if (seq !== encodeSeq) return;
         rememberEncode(key, { bytes: encoded });
       }
       const plan = planCard(encoded.length, cardSpec());
-      // The tier and depth were chosen to clear the floor; this is the
-      // guarantee, checked against the bytes the codec really produced.
       if (plan.moduleMm < MODULE_FLOOR_MM) {
-        throw new Error('This clip came out too large for a scannable card — trim it a little shorter.');
+        throw new Error('This clip came out too large for a card that scans. Trim it a little shorter.');
       }
-      const chunks = splitPayload(
-        encoded,
-        tier.wireVersion,
-        modeIdForTier(tier, depth),
-        plan.payloadPerChunk,
-        state.cardId,
-      );
-      const renderInput: RenderInput = {
+      const chunks = splitPayload(encoded, t.wireVersion, modeIdForTier(t, depth), plan.payloadPerChunk, state.cardId);
+      if (seq !== encodeSeq) return;
+      state.tier = t;
+      state.depth = depth;
+      state.encoded = encoded;
+      state.renderInput = {
         plan,
         matrices: chunks.map((c) => chunkMatrix(c, plan.qrVersion)),
         entry: entryMatrix(playerUrl()),
-        inverted: state.inverted,
+        inverted: state.stock === 'black',
         burnMm: state.burnMm,
-        // Seeded by card id so the preview, PNG, and SVG are the same field.
         texture: state.textured ? { seed: state.cardId } : undefined,
       };
-      state.tier = tier;
-      state.depth = depth;
-      state.encoded = encoded;
-      state.plan = plan;
-      state.renderInput = renderInput;
-      state.frontInput = buildFrontInput(plan);
-      renderPreview();
+      drawStageBack();
+      updateSummary();
+      updateStats();
+      updateDownloads();
+      renderWarnings();
     } catch (e) {
-      if (seq === encodeSeq) {
-        setError(
-          e instanceof MimiTimeoutError || e instanceof MimiDownloadError
-            ? "The Best voice model couldn't run here just now — pick Basic to build the card on this device, or try another browser."
+      if (seq !== encodeSeq) return;
+      // No card rather than a stale one.
+      clearBack();
+      console.error('Momento: could not build the card', e);
+      $('card-summary').textContent = 'No back yet.';
+      setError(
+        e instanceof MimiDownloadError
+          ? "The voice model didn't download. Check the connection and try again."
+          : e instanceof MimiTimeoutError
+            ? 'The voice model stopped responding on this device. Reload the page and try again, or use another browser.'
             : e instanceof Error
               ? e.message
               : 'Something went wrong while building the card.',
-        );
-      }
+      );
     }
   }
 
-  function renderPreview(): void {
-    const { plan, renderInput } = state;
-    if (!plan || !renderInput) return;
-    $('card-wrap').style.display = 'block';
-
-    const canvas = $<HTMLCanvasElement>('card-preview');
-    const previewPxPerMm = Math.max(8, Math.min(14, 1600 / plan.widthMm / 2));
-    canvas.width = Math.round(plan.widthMm * previewPxPerMm * 2);
-    canvas.height = Math.round(plan.heightMm * previewPxPerMm * 2);
-    drawCard(canvas.getContext('2d')!, renderInput, previewPxPerMm * 2);
-    const front = $<HTMLCanvasElement>('front-preview');
-    if (state.frontInput) {
-      front.width = canvas.width;
-      front.height = canvas.height;
-      drawFront(front.getContext('2d')!, state.frontInput, previewPxPerMm * 2);
-    }
-    // Round the preview's corners like the blank's, so what the corners cut
-    // off is visible before engraving (square blanks keep the stylesheet's).
-    const corner = CARD_SIZES[state.cardSize].cornerMm;
-    const radius = corner
-      ? `${((corner / plan.widthMm) * 100).toFixed(2)}% / ${((corner / plan.heightMm) * 100).toFixed(2)}%`
-      : '';
-    canvas.style.borderRadius = front.style.borderRadius = radius;
-
-    updateStatsLine();
-
+  function renderWarnings(): void {
     const w = $('warnings');
-    w.innerHTML = '';
-    // No module-size warnings to render: a tier below the floor is never
-    // offered, so the only thing left to say is when the field ran out of room.
-    if (plan.warnings.includes('texture-cramped')) {
-      const div = document.createElement('div');
-      div.className = 'warning';
+    w.textContent = '';
+    if (state.renderInput?.plan.warnings.includes('texture-cramped')) {
+      const div = document.createElement('p');
+      div.className = 'note';
       div.textContent =
-        'ℹ This clip fills the card, so the pixel field only reaches the margins — the codes keep their full quiet zones. A shorter clip or a lower quality tier lets the field run between them.';
+        'This clip fills the card, so the pixel field only reaches the margins. The codes keep their full quiet zones.';
       w.appendChild(div);
     }
   }
 
-  function updateStatsLine(): void {
-    const { plan, renderInput, tier, encoded, depth } = state;
-    if (!plan || !renderInput || !tier || !encoded) return;
-    const seconds = state.trim.endSec - state.trim.startSec;
-    const codecLabel =
-      tier.codec === 'mimi'
+  function updateStats(): void {
+    const { renderInput, tier: t, encoded, depth } = state;
+    const el = $('stats-line');
+    if (!renderInput || !t || !encoded) {
+      el.textContent = '';
+      return;
+    }
+    const { plan } = renderInput;
+    const codec =
+      t.codec === 'mimi'
         ? `Mimi ${((depth * MIMI_CODE_BITS * MIMI_FRAME_RATE) / 1000).toFixed(2)} kbps (${depth} codes/frame)`
-        : `Codec 2 ${tier.mode}`;
-    // Once the maker has previewed this exact card we know which restoration
-    // their device managed — worth saying, since it is what a scanner hears.
-    const restoration = encodeCache.get(cacheKey(tier, depth))?.restored?.restoration;
-    const restoreLabel =
-      restoration === 'neural'
-        ? ' (neural restoration)'
-        : restoration === 'dsp'
-          ? ' (standard restoration)'
-          : '';
+        : 'Pulse heartbeat codec 1.4 kbps';
     const field = cardTexture(renderInput);
-    $('stats-line').textContent =
-      `${seconds.toFixed(1)}s audio · ${codecLabel}${restoreLabel} · ${encoded.length} bytes · ` +
-      `${plan.chunkCount} data codes (QR v${plan.qrVersion}) + 1 entry code · ` +
-      `${plan.moduleMm.toFixed(2)}mm modules · ${plan.grid.cols}×${plan.grid.rows} grid` +
-      (field ? ` · +${(field.coverage * 100).toFixed(0)}% engraved area (texture)` : '');
+    el.textContent =
+      `${codec}, ${encoded.length} bytes in ${plan.chunkCount} data codes (QR v${plan.qrVersion}) + 1 entry code, ` +
+      `${plan.moduleMm.toFixed(2)}mm modules on a ${plan.grid.cols}×${plan.grid.rows} grid` +
+      (field ? `, +${(field.coverage * 100).toFixed(0)}% engraved area for the texture` : '');
   }
+
+  // --- hear this card: the scanner's own decode ---
+
+  function stopHearing(): void {
+    playback?.stop();
+    playback = null;
+  }
+
+  $('hear-card').addEventListener('click', async () => {
+    const t = state.tier;
+    const btn = $<HTMLButtonElement>('hear-card');
+    if (!t || !state.encoded || hearing) return;
+    hearing = true;
+    btn.disabled = true;
+    btn.textContent = t.codec === 'mimi' ? 'Rebuilding the voice…' : 'Rebuilding…';
+    try {
+      const key = cacheKey(t, state.depth);
+      const cached = encodeCache.get(key);
+      let restored = cached?.restored;
+      if (!restored) {
+        restored = await decodeForPlayback(t.wireVersion, modeIdForTier(t, state.depth), state.encoded, (msg) => {
+          btn.textContent = msg;
+        });
+        rememberEncode(key, { bytes: state.encoded, restored });
+      }
+      stopHearing();
+      btn.textContent = 'Playing…';
+      const pb = playPcm(restored.pcm, restored.sampleRate);
+      playback = pb;
+      await pb.done;
+    } catch (e) {
+      console.error('Momento: preview failed', e);
+      setError(
+        e instanceof MimiDownloadError
+          ? "The voice model didn't download. Check the connection and try again."
+          : t.codec === 'mimi'
+            ? MIMI_FAILED
+            : "This card couldn't be played back here.",
+      );
+    } finally {
+      hearing = false;
+      btn.textContent = 'Hear this card';
+      updateDownloads();
+    }
+  });
 
   // --- downloads ---
 
-  $('dl-png').addEventListener('click', () => {
-    const { plan, renderInput } = state;
-    if (!plan || !renderInput) return;
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.round(plan.widthMm * PX_PER_MM);
-    canvas.height = Math.round(plan.heightMm * PX_PER_MM);
-    drawCard(canvas.getContext('2d')!, renderInput, PX_PER_MM);
-    downloadPng(canvas, 'momento-card-back.png');
+  $('dl-back-png').addEventListener('click', () => {
+    const r = state.renderInput;
+    if (!r) return;
+    const c = document.createElement('canvas');
+    c.width = Math.round(r.plan.widthMm * PX_PER_MM);
+    c.height = Math.round(r.plan.heightMm * PX_PER_MM);
+    drawCard(c.getContext('2d')!, r, PX_PER_MM);
+    downloadPng(c, 'momento-card-back.png');
   });
-
   $('dl-svg').addEventListener('click', () => {
     if (!state.renderInput) return;
-    const svg = renderSvg(state.renderInput);
-    downloadBlob(new Blob([svg], { type: 'image/svg+xml' }), 'momento-card-back.svg');
+    downloadBlob(new Blob([renderSvg(state.renderInput)], { type: 'image/svg+xml' }), 'momento-card-back.svg');
   });
-
   $('dl-front-png').addEventListener('click', () => {
-    const { plan, frontInput } = state;
-    if (!plan || !frontInput) return;
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.round(plan.widthMm * PX_PER_MM);
-    canvas.height = Math.round(plan.heightMm * PX_PER_MM);
-    drawFront(canvas.getContext('2d')!, frontInput, PX_PER_MM);
-    downloadPng(canvas, 'momento-card-front.png');
+    if (!frontReady()) return;
+    const { widthMm, heightMm } = cardDims();
+    const c = document.createElement('canvas');
+    c.width = Math.round(widthMm * PX_PER_MM);
+    c.height = Math.round(heightMm * PX_PER_MM);
+    drawFront(c.getContext('2d')!, frontInput(), PX_PER_MM);
+    downloadPng(c, 'momento-card-front.png');
   });
-
   $('dl-front-svg').addEventListener('click', () => {
-    if (!state.frontInput) return;
-    const svg = renderFrontSvg(state.frontInput);
-    downloadBlob(new Blob([svg], { type: 'image/svg+xml' }), 'momento-card-front.svg');
+    if (!frontReady()) return;
+    downloadBlob(new Blob([renderFrontSvg(frontInput())], { type: 'image/svg+xml' }), 'momento-card-front.svg');
   });
 
-  function setError(msg: string | null): void {
-    const box = $('error-box');
-    box.innerHTML = '';
-    if (msg) {
-      const div = document.createElement('div');
-      div.className = 'error';
-      div.textContent = msg;
-      box.appendChild(div);
-    }
-  }
+  // --- first paint ---
+
+  refreshAll();
+  // The card's type is drawn on canvas, which only uses a web font once it has
+  // loaded; redraw when Cormorant arrives so the preview matches the export.
+  void Promise.all(
+    Object.values(FONT_FAMILIES).map((fam) => document.fonts?.load(`500 20px ${fam}`).catch(() => undefined)),
+  ).then(() => refreshFront());
+  let resizeTimer = 0;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = window.setTimeout(() => {
+      drawStageFront();
+      drawStageBack();
+    }, 150);
+  });
 }
 
-/** Today's date as 'YYYY-MM-DD' in local time — the default for the Recorded
- * field, matching the value shape of an <input type="date">. */
+/** A two-lobed voice-like envelope for the sample front shown before a sound. */
+function sampleBars(count: number): number[] {
+  return Array.from({ length: count }, (_, i) => {
+    const t = i / Math.max(1, count - 1);
+    const lobes = Math.abs(Math.sin(Math.PI * t * 2.2)) * 0.75 + 0.25 * Math.abs(Math.sin(Math.PI * t * 9.3));
+    const env = Math.sin(Math.PI * t) ** 0.6;
+    return Math.max(0.045, Math.min(1, lobes * env * 1.15));
+  });
+}
+
+const SAMPLE_HEARTBEAT = { bpm: 148, beats: [1, 0.86, 0.95, 0.9] };
+
 function todayIso(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** The URL engraved in every card's entry code: the scanner home page. Once a
- * card is engraved this can never change, so it is a fixed address rather than
- * wherever the station happens to run — a card made from a local dev server
- * must not point at localhost. VITE_PLAYER_URL overrides it at build time. */
+/** The URL engraved in every card's entry code: the scanner home page. Fixed,
+ * since an engraved card can never change; VITE_PLAYER_URL overrides it. */
 const PLAYER_URL = 'https://k.gabefen.com/';
 
 function playerUrl(): string {
   return (import.meta.env.VITE_PLAYER_URL as string | undefined) || PLAYER_URL;
 }
 
-/** A canvas as a PNG that knows its physical size (PNG_DPI), so laser
- * software imports it at exactly card size instead of guessing a DPI. */
+/** A canvas as a PNG that knows its physical size, so laser software imports
+ * it at exactly card size. */
 function downloadPng(canvas: HTMLCanvasElement, filename: string): void {
   canvas.toBlob((blob) => {
     if (!blob) return;
     void blob.arrayBuffer().then((buf) => {
-      const png = pngWithDpi(new Uint8Array(buf), PNG_DPI);
-      downloadBlob(new Blob([png], { type: 'image/png' }), filename);
+      downloadBlob(new Blob([pngWithDpi(new Uint8Array(buf), PNG_DPI)], { type: 'image/png' }), filename);
     });
   }, 'image/png');
 }

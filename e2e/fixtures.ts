@@ -22,3 +22,45 @@ export function wavFixture(seconds = 3): Buffer {
   }
   return data;
 }
+
+type Page = import('@playwright/test').Page;
+
+/** Wait until the back is built: its downloads unlock. */
+export async function backReady(page: Page, timeout = 60_000): Promise<void> {
+  const { expect } = await import('@playwright/test');
+  await expect(page.locator('#dl-back-png')).toBeEnabled({ timeout });
+}
+
+/** Switch the card to light stock: the artwork then is exactly what a camera
+ * sees on the finished card (dark marks on light), as the older tests assume. */
+export async function lightCard(page: Page): Promise<void> {
+  await page.click('button[data-stock="light"]');
+}
+
+/**
+ * The back as a camera sees the finished card. On light stock that is the
+ * artwork itself; on black metal the laser turns every dark mark of the
+ * artwork light and leaves the rest black — i.e. the artwork inverted.
+ */
+export async function backPhoto(page: Page): Promise<Buffer> {
+  const b64 = await page.evaluate(() => {
+    const src = document.querySelector<HTMLCanvasElement>('#card-preview')!;
+    const black = document.querySelector<HTMLElement>('#stage-card')!.dataset.stock === 'black';
+    const c = document.createElement('canvas');
+    c.width = src.width;
+    c.height = src.height;
+    const ctx = c.getContext('2d')!;
+    ctx.drawImage(src, 0, 0);
+    if (black) {
+      const img = ctx.getImageData(0, 0, c.width, c.height);
+      for (let i = 0; i < img.data.length; i += 4) {
+        // anodized black ≈ 20, engraved silver ≈ 212: a real card's contrast
+        const v = img.data[i]! < 128 ? 212 : 20;
+        img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      }
+      ctx.putImageData(img, 0, 0);
+    }
+    return c.toDataURL('image/png').split(',')[1]!;
+  });
+  return Buffer.from(b64, 'base64');
+}

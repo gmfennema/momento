@@ -5,8 +5,7 @@
 // controlled and isolated, and dev/preview get real headers, so this no-ops.
 // The reload is disarmed as soon as the user starts doing anything: blowing
 // away an in-progress recording or a half-scanned card is far worse than one
-// session without Lyra playback for older cards (everything else works
-// un-isolated, just single-threaded).
+// session of single-threaded (slower) Mimi.
 //
 // The same reload also picks up a new version: the worker serves the cached
 // shell first, so a returning visitor would otherwise run the previous build

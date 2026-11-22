@@ -4,16 +4,16 @@
 // self-describing:
 //
 //   offset 0    magic 0x4D ('M') — rejects foreign QR codes
-//   offset 1    bits 7–5 format version · bits 4–0 codec mode id (versions 0–1
-//               use only bits 4–2; bits 1–0 are reserved there)
+//   offset 1    bits 7–5 format version · bits 4–0 codec mode id (version 3
+//               uses only bits 4–2; bits 1–0 are reserved there)
 //   offset 2–3  cardId, random u16 LE — prevents mixing chunks of two cards
 //   offset 4    chunkIndex (u8, 0-based)
 //   offset 5    totalChunks (u8, ≥1)
 //
-// The format version selects the codec (and its mode table):
-//   version 0 — Codec 2, 8 kHz; mode id indexes MODE_BY_ID
-//   version 1 — Lyra V2, 16 kHz; mode id 0 = 3.2 kbps (others reserved)
+// The format version selects the codec. Versions 0 and 1 (Codec 2, Lyra) were
+// prototype codecs, retired before any card shipped; they are rejected.
 //   version 2 — Mimi, 24 kHz; mode id = codes per frame − 1 (depth 1–32)
+//   version 3 — Pulse heartbeat vocoder, 16 kHz; mode id 0 (others reserved)
 //
 // No CRC/length field: QR's internal Reed-Solomon already guarantees per-code
 // integrity, and the total payload length is the sum of received payload
@@ -21,15 +21,11 @@
 
 export const MAGIC = 0x4d;
 export const HEADER_BYTES = 6;
-export const WIRE_CODEC2 = 0;
-export const WIRE_LYRA = 1;
 export const WIRE_MIMI = 2;
-const KNOWN_VERSIONS: readonly number[] = [WIRE_CODEC2, WIRE_LYRA, WIRE_MIMI];
+export const WIRE_PULSE = 3;
+const KNOWN_VERSIONS: readonly number[] = [WIRE_MIMI, WIRE_PULSE];
 
-/** Codec2 mode ids as carried on the wire. Only a subset is offered for encoding. */
-export const MODE_BY_ID = ['3200', '2400', '1600', '1400', '1300', '1200', '700C', '450'] as const;
-export type Codec2Mode = (typeof MODE_BY_ID)[number];
-/** 3 bits for versions 0–1, 5 bits for version 2 (see modeBits). */
+/** 3 bits for version 3, 5 bits for version 2 (see modeBits). */
 export type CodecModeId = number;
 
 /** Width of the mode id field: Mimi needs 5 bits for its depth. */
@@ -45,9 +41,6 @@ export function mimiModeId(depth: number): CodecModeId {
 export function mimiDepth(modeId: CodecModeId): number {
   return modeId + 1;
 }
-
-/** The one Lyra mode currently defined for wire version 1. */
-export const LYRA_MODE_3200: CodecModeId = 0;
 
 export interface ChunkHeader {
   version: number;

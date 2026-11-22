@@ -1,0 +1,722 @@
+/* Momento card station. A pale gallery wall with the card as the one object
+   on it: everything around the card stays quiet so the engraving reads. */
+
+:root {
+  --fog: #e9eaec;
+  --paper: #f7f7f8;
+  --line: #d3d5d9;
+  --line-soft: #e0e2e5;
+  --ink: #202226;
+  --slate: #6d7178;
+  --anodized: #141517;
+  --engrave: #d4d6da;
+  --danger: #a3352b;
+  --display: 'Cormorant Garamond', 'Iowan Old Style', Georgia, serif;
+  --text: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body.station {
+  margin: 0;
+  background: var(--fog);
+  color: var(--ink);
+  font: 15px/1.55 var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+body.station #app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 28px 32px 64px;
+}
+
+.station a {
+  color: inherit;
+  text-underline-offset: 2px;
+}
+
+.station :focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+/* ---- header ---- */
+
+.st-head {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 40px;
+}
+
+.st-mark {
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 28px;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+
+.st-sub {
+  color: var(--slate);
+  font-size: 14px;
+}
+
+/* ---- layout ---- */
+
+.st-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr);
+  gap: 64px;
+  align-items: start;
+}
+
+.st-stage {
+  position: sticky;
+  top: 28px;
+}
+
+/* ---- the card ---- */
+
+.stage-card {
+  --ar: 85.6 / 53.98;
+  --radius: 3.7% / 5.9%;
+  aspect-ratio: var(--ar);
+  perspective: 1800px;
+}
+
+.flip {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  transition: transform 0.7s var(--ease);
+}
+
+.stage-card[data-face='back'] .flip {
+  transform: rotateY(180deg);
+}
+
+.face {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius);
+  overflow: hidden;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  box-shadow:
+    0 1px 1px rgba(20, 22, 26, 0.18),
+    0 10px 24px -10px rgba(20, 22, 26, 0.35),
+    0 36px 70px -28px rgba(20, 22, 26, 0.45);
+}
+
+.face-back {
+  transform: rotateY(180deg);
+  display: grid;
+  place-items: center;
+}
+
+.face-back canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Author display rules beat the UA's [hidden]; restate it where one applies. */
+.face-back canvas[hidden],
+.back-empty[hidden] {
+  display: none;
+}
+
+/* The artwork is black marks on white — what the laser burns. On black metal
+   the burned marks come out light, so the preview shows the artwork inverted
+   into engraved silver on anodized black. */
+.stage-card[data-stock='black'] .face {
+  background: var(--anodized);
+}
+
+.stage-card[data-stock='black'] canvas,
+.designs[data-stock='black'] canvas {
+  filter: invert(0.915);
+}
+
+.stage-card[data-stock='light'] .face {
+  background: #fff;
+}
+
+/* A soft light falling across the metal. */
+.stage-card[data-stock='black'] .face::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(118deg, rgba(255, 255, 255, 0.07) 0%, rgba(255, 255, 255, 0) 38%);
+}
+
+.back-empty {
+  max-width: 22em;
+  margin: 0;
+  padding: 0 24px;
+  text-align: center;
+  font-family: var(--display);
+  font-size: 19px;
+  line-height: 1.35;
+  color: var(--engrave);
+  opacity: 0.75;
+}
+
+.stage-card[data-stock='light'] .back-empty {
+  color: var(--slate);
+}
+
+.stage-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 28px;
+}
+
+.stage-summary {
+  margin: 14px 0 0;
+  color: var(--slate);
+  font-size: 14px;
+  max-width: 46em;
+}
+
+/* ---- controls ---- */
+
+.station button,
+.station select,
+.station input {
+  font: inherit;
+  color: inherit;
+}
+
+.btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  border-radius: 8px;
+  padding: 9px 16px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--ink);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btn-ink {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper) !important;
+}
+
+.btn-ink:hover:not(:disabled) {
+  background: #000;
+}
+
+.btn-small {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+.btn.recording {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-quiet {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 8px 2px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  text-decoration-color: var(--line);
+}
+
+.btn-quiet:hover:not(:disabled) {
+  text-decoration-color: var(--ink);
+}
+
+.btn-quiet:disabled {
+  color: var(--slate);
+  text-decoration: none;
+  cursor: default;
+}
+
+.seg {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--line-soft);
+}
+
+.seg button {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 7px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--slate);
+}
+
+.seg button[aria-pressed='true'],
+.seg button[aria-checked='true'] {
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgba(20, 22, 26, 0.12);
+}
+
+.seg-wide {
+  display: flex;
+}
+
+.seg-wide button {
+  flex: 1;
+}
+
+/* ---- steps ---- */
+
+.step {
+  padding: 28px 0 32px;
+  border-top: 1px solid var(--line);
+}
+
+.step:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.step h2 {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0 0 18px;
+  font-family: var(--display);
+  font-weight: 500;
+  font-size: 28px;
+  line-height: 1.15;
+  letter-spacing: 0.005em;
+}
+
+.step .n {
+  font-size: 18px;
+  color: var(--slate);
+  font-feature-settings: 'lnum';
+  min-width: 14px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.status,
+.note {
+  color: var(--slate);
+  font-size: 14px;
+}
+
+.note {
+  margin: 12px 0 0;
+  max-width: 40em;
+}
+
+.note:empty {
+  display: none;
+}
+
+.tech {
+  margin: 14px 0 0;
+  font-size: 12.5px;
+  color: var(--slate);
+  overflow-wrap: anywhere;
+}
+
+/* kind */
+
+.kinds {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.kind {
+  appearance: none;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  text-align: left;
+  padding: 18px 18px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper);
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.kind svg {
+  width: 48px;
+  height: 24px;
+  fill: currentColor;
+  color: var(--slate);
+  margin-bottom: 6px;
+}
+
+.kind strong {
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 22px;
+  line-height: 1.1;
+}
+
+.kind span {
+  color: var(--slate);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.kind:hover {
+  border-color: #a9acb2;
+}
+
+.kind[aria-checked='true'] {
+  border-color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--ink);
+}
+
+.kind[aria-checked='true'] svg {
+  color: var(--ink);
+}
+
+/* sound */
+
+.drop {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  text-align: center;
+  padding: 26px 20px;
+  border: 1px dashed #a9acb2;
+  border-radius: 12px;
+  background: var(--paper);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.drop input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.drop:hover,
+.drop.over {
+  border-color: var(--ink);
+}
+
+.drop:focus-within {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.drop-main {
+  font-weight: 500;
+}
+
+.drop-sub {
+  color: var(--slate);
+  font-size: 14px;
+}
+
+#trim-wrap {
+  margin-top: 16px;
+}
+
+.trim {
+  display: block;
+  width: 100%;
+  height: 72px;
+  border-radius: 8px;
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+  touch-action: none;
+  cursor: ew-resize;
+  --wave-ink: #7d8188;
+  --wave-sel: rgba(32, 34, 38, 0.08);
+  --wave-edge: #202226;
+}
+
+/* designs */
+
+.designs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.design {
+  appearance: none;
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.design canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  outline: 1px solid transparent;
+  outline-offset: 4px;
+  box-shadow: 0 6px 16px -10px rgba(20, 22, 26, 0.5);
+  transition: outline-color 0.15s;
+}
+
+.designs[data-stock='light'] .design canvas {
+  box-shadow: 0 0 0 1px var(--line), 0 6px 16px -10px rgba(20, 22, 26, 0.35);
+}
+
+.design[aria-checked='true'] canvas {
+  outline: 1.5px solid var(--ink);
+}
+
+.design:hover canvas {
+  outline-color: #a9acb2;
+}
+
+.design[aria-checked='true']:hover canvas {
+  outline-color: var(--ink);
+}
+
+.design strong {
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 20px;
+  line-height: 1.15;
+}
+
+.design span {
+  color: var(--slate);
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+
+/* details */
+
+.fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px 16px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field-wide {
+  grid-column: 1 / -1;
+}
+
+.field[hidden] {
+  display: none;
+}
+
+.field > span {
+  font-size: 13.5px;
+  color: var(--slate);
+}
+
+.field input[type='text'],
+.field input[type='date'],
+.field select {
+  width: 100%;
+  appearance: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  padding: 10px 12px;
+  min-height: 42px;
+}
+
+.field select {
+  background-image: linear-gradient(45deg, transparent 50%, var(--slate) 50%),
+    linear-gradient(135deg, var(--slate) 50%, transparent 50%);
+  background-position: calc(100% - 18px) 52%, calc(100% - 13px) 52%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 36px;
+}
+
+.field input:focus,
+.field select:focus {
+  outline: none;
+  border-color: var(--ink);
+}
+
+.field input[type='text'] {
+  font-family: var(--display);
+  font-size: 20px;
+  padding: 6px 12px;
+}
+
+.photo-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.check input {
+  accent-color: var(--ink);
+  margin-top: 3px;
+}
+
+/* engrave */
+
+.downloads {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.downloads .btn {
+  padding: 12px 16px;
+}
+
+.settings {
+  margin-top: 24px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 14px;
+}
+
+.settings summary {
+  cursor: pointer;
+  color: var(--slate);
+  font-size: 14px;
+  list-style: none;
+}
+
+.settings summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings summary::before {
+  content: '+';
+  display: inline-block;
+  width: 16px;
+}
+
+.settings[open] summary::before {
+  content: '−';
+}
+
+.settings[open] summary {
+  margin-bottom: 16px;
+  color: var(--ink);
+}
+
+/* messages */
+
+.error {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-left: 2px solid var(--danger);
+  background: rgba(163, 53, 43, 0.06);
+  color: var(--danger);
+  font-size: 14px;
+}
+
+.st-foot {
+  margin-top: 56px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  color: var(--slate);
+  font-size: 13px;
+  max-width: 60em;
+}
+
+/* ---- small screens: one column, the card on top ---- */
+
+@media (max-width: 900px) {
+  body.station #app {
+    padding: 20px 16px 48px;
+  }
+
+  .st-head {
+    margin-bottom: 24px;
+  }
+
+  .st-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 28px;
+  }
+
+  .st-stage {
+    position: static;
+  }
+}
+
+@media (max-width: 520px) {
+  .kinds,
+  .fields,
+  .downloads {
+    grid-template-columns: 1fr;
+  }
+
+  .step h2 {
+    font-size: 25px;
+  }
+
+  .stage-bar {
+    margin-top: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flip,
+  .btn,
+  .kind,
+  .design canvas {
+    transition: none;
+  }
+}

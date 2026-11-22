@@ -7,12 +7,12 @@
 import {
   HEADER_BYTES,
   mimiModeId,
-  WIRE_CODEC2,
   WIRE_MIMI,
-  type Codec2Mode,
+  WIRE_PULSE,
   type CodecModeId,
 } from './chunk';
 import { MIMI_CODE_BITS, MIMI_FRAME_RATE, mimiPayloadBytes } from './mimi';
+import { pulsePayloadBytes } from './pulse';
 
 /** Card blanks the generator lays out for. They differ in shape, not just
  * size, so artwork for one can't be scaled onto the other: 3.5″ × 2″ art shrunk
@@ -54,7 +54,7 @@ export function byteCapacityL(version: number): number {
 }
 
 interface TierBase {
-  key: 'basic' | 'best';
+  key: 'heartbeat' | 'best';
   wireVersion: number;
   modeId: CodecModeId;
   bytesPerSec: number;
@@ -66,7 +66,7 @@ interface TierBase {
   blurb: string;
 }
 
-export type Tier = TierBase & ({ codec: 'codec2'; mode: Codec2Mode } | { codec: 'mimi' });
+export type Tier = TierBase & ({ codec: 'pulse' } | { codec: 'mimi' });
 
 /** Longest clip that may go on a card. Lives here rather than in lib/audio.ts
  * (browser-only) so the planner — and its node tests — can reason about the
@@ -83,27 +83,24 @@ export const MIMI_MAX_DEPTH_ON_CARD = 20;
 /**
  * The ladder, cheapest first — two rungs:
  *
- * - Basic: Codec 2 at 1.4 kbps, restored at playback by the neural
- *   bandwidth-extension model (lib/bwe.ts). No codec download for the maker,
- *   so it is the fallback when Mimi can't run.
+ * - Heartbeat: the Pulse noise vocoder (lib/pulse.ts) at 1.4 kbps, built for
+ *   doppler heartbeat recordings, which speech codecs mangle. No download.
+ *   Never used as a stand-in for Best: a voice needs Mimi or no card.
  * - Best: the Mimi neural codec, whose depth (codes per frame) the generator
  *   sets per clip so the card is as full as the scannability floor allows —
  *   see mimiDepthFor. A full 10 s clip still gets ≥ 10 codes a frame.
  *
- * Lyra 3.2 kbps and Codec 2 2400 used to sit between them; Mimi out-scores
- * both at every clip length (measured), so they are decode-only now.
  */
 export const TIERS: readonly Tier[] = [
   {
-    key: 'basic',
-    codec: 'codec2',
-    mode: '1400',
-    wireVersion: WIRE_CODEC2,
-    modeId: 3,
+    key: 'heartbeat',
+    codec: 'pulse',
+    wireVersion: WIRE_PULSE,
+    modeId: 0,
     bytesPerSec: 175,
-    frameBytes: 7,
-    label: 'Basic',
-    blurb: 'Codec 2 vocoder, restored by a neural model on playback. Smallest download; fits a full-length clip.',
+    frameBytes: 3,
+    label: 'Heartbeat',
+    blurb: 'For ultrasound and doppler heartbeats: keeps every whoosh, click and gap. Not for voices.',
   },
   {
     key: 'best',
@@ -126,7 +123,8 @@ export const TIERS: readonly Tier[] = [
  * plan up a QR version and shrink every module on the card.) */
 export function estimatePayloadBytes(seconds: number, tier: Tier): number {
   if (tier.codec === 'mimi') return mimiPayloadBytes(mimiFrames(seconds), MIMI_MIN_DEPTH);
-  return Math.ceil(seconds * tier.bytesPerSec) + tier.frameBytes;
+  // Exact, plus one frame for a slice a sample longer than the window.
+  return pulsePayloadBytes(Math.ceil(seconds * 100 - 1e-9) + 1);
 }
 
 /** Mimi frames in a clip (the encoder rounds a partial frame up). */
@@ -195,22 +193,6 @@ export function maxSecondsForTier(tier: Tier, spec: CardSpec): number {
     else fails = mid;
   }
   return fits / 10;
-}
-
-/** The best-sounding tier this clip can actually have: the last rung in TIERS
- * order whose card still clears the floor. Nothing below the floor is ever
- * returned — a clip that fits no rung at all is a hard error, not a warning. */
-export function bestTierThatFits(
-  seconds: number,
-  spec: CardSpec,
-  allowMimi: boolean,
-): Tier {
-  for (let i = TIERS.length - 1; i >= 0; i--) {
-    const tier = TIERS[i]!;
-    if (tier.codec === 'mimi' && !allowMimi) continue;
-    if (tierFits(seconds, tier, spec)) return tier;
-  }
-  throw new Error('audio too large to fit on a card');
 }
 
 export type LayoutWarning = 'module-below-0.30' | 'module-below-0.25' | 'texture-cramped';

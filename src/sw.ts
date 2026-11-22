@@ -1,7 +1,7 @@
 // Service worker: offline precaching (via Workbox) plus cross-origin-isolation
 // headers for GitHub Pages.
 //
-// Threaded wasm (Lyra, and onnxruntime for Mimi and the neural restorer) needs
+// Threaded wasm (onnxruntime, which runs Mimi) needs
 // SharedArrayBuffer, which browsers only expose on cross-origin isolated pages
 // (COOP + COEP response headers). GitHub Pages cannot set headers, but a
 // service worker may rewrite the responses it serves — the standard
@@ -37,13 +37,13 @@ function withCoiHeaders(res: Response): Response {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
-// The neural assets (~27 MB of enhancer models in bwe/, ~130 MB of Mimi codec
-// models in mimi/, ~13 MB of onnxruntime wasm in ort/) are far beyond the
+// The neural assets (~130 MB of Mimi codec models in mimi/, ~13 MB of
+// onnxruntime wasm in ort/) are far beyond the
 // precache size limit, so they are cached on first use instead: cache-first
 // keeps replays instant and offline-capable without making every visitor
 // download them up front.
 const HEAVY_CACHE = 'momento-heavy-v1';
-const HEAVY_PATH = /\/(bwe|mimi|ort)\/[^/]+\.(onnx|wasm)$/;
+const HEAVY_PATH = /\/(mimi|ort)\/[^/]+\.(onnx|wasm)$/;
 
 async function heavy(request: Request): Promise<Response> {
   const cache = await caches.open(HEAVY_CACHE);
