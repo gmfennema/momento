@@ -101,6 +101,10 @@ test('every design renders, downloads, and the heartbeat ones embed the scan', a
   for (const [kind, design] of designs) {
     if (kind === 'heartbeat' && design === 'framed') {
       await page.click('.kind[data-kind="heartbeat"]');
+      // Heartbeat cards swap the recording date for an open due-date field.
+      await expect(page.locator('#recorded-date')).toBeHidden();
+      await expect(page.locator('#due-date')).toBeVisible();
+      await page.fill('#due-date', '6/14/2027');
       await page.setInputFiles('#photo-input', { name: 'scan.png', mimeType: 'image/png', buffer: scanFixture() });
       await backReady(page);
     }
@@ -113,6 +117,8 @@ test('every design renders, downloads, and the heartbeat ones embed the scan', a
       expect(svg).toContain('<image href="data:image/png;base64,');
       expect(svg).toContain('<polyline'); // the heart-monitor trace
       expect(svg).not.toContain('stroke-dasharray'); // no placeholder left in
+      expect(svg).toContain('06.14.27');
+      expect(svg).not.toContain('RECORDED');
     } else {
       expect(svg).not.toContain('<image');
       expect(svg).toContain(design === 'ring' ? 'transform="rotate(' : 'For Mom');

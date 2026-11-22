@@ -8,6 +8,7 @@ import {
   FRONT_DESIGNS,
   layoutFront,
   metadataParts,
+  formatDue,
   MIN_BAR,
   MIN_STROKE_MM,
   monogram,
@@ -54,6 +55,7 @@ function input(design: FrontDesign, over: Partial<FrontInput> = {}): FrontInput 
     textLine: heart ? 'Baby Grace' : 'For Mom',
     voice: heart ? undefined : 'Emma',
     recordedAt: '2026-11-20',
+    dueDate: heart ? 'June 14, 2027' : undefined,
     photo: heart ? photo : undefined,
     heartbeat: heart ? { bpm: 152, beats: [1, 0.8, 0.9, 0.85] } : undefined,
     ...over,
@@ -263,6 +265,29 @@ describe('heartbeat designs', () => {
 
   it('no card shows the clip length', () => {
     for (const d of ALL) expect(texts(layoutFront(input(d))).map((t) => t.text).join()).not.toMatch(/DURATION|\d\d:\d\d/);
+  });
+
+  it('heartbeat cards show the due date, never the recording date', () => {
+    expect(metadataParts(input('framed'))).toEqual(['DUE: JUNE 14, 2027', 'HEART RATE: 152 BPM']);
+    const heartline = texts(layoutFront(input('heartline'))).map((t) => t.text);
+    expect(heartline).toContain('DUE JUNE 14, 2027');
+    for (const d of ['framed', 'heartline'] as const) {
+      const t = texts(layoutFront(input(d))).map((m) => m.text).join();
+      expect(t).not.toContain('RECORDED');
+      expect(t).not.toContain('11.20.26');
+      expect(texts(layoutFront(input(d, { dueDate: '' }))).map((m) => m.text).join()).not.toContain('DUE');
+    }
+    // and a voice card ignores a due date
+    expect(metadataParts(input('wave', { dueDate: '2027-06-14' })).join()).not.toContain('DUE');
+  });
+
+  it('formats a numeric due date like the other engraved dates', () => {
+    expect(formatDue('2027-06-14')).toBe('06.14.27');
+    expect(formatDue('6/14/2027')).toBe('06.14.27');
+    expect(formatDue(' 6.4.27 ')).toBe('06.04.27');
+    expect(formatDue('june  2027')).toBe('JUNE 2027');
+    expect(formatDue('13/40/27')).toBe('13/40/27');
+    expect(formatDue('   ')).toBe('');
   });
 
   it('a voice field never shows on a heartbeat card', () => {

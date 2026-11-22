@@ -45,7 +45,7 @@ now serves only a redirect from there to the new domain (see
       heart-monitor trace) or **Heartline** (the scan fading in from the card's
       edge). The trace follows the clip's detected beats and prints the heart
       rate. The scan stays in the browser tab only.
-   4. *Details* — title, voice, date, the scan, and the **card stock**. Black
+   4. *Details* — title, voice and recording date (or, on a heartbeat card, the due date), the scan, and the **card stock**. Black
       metal (the default) inverts the back's codes *and* engraves the scan as a
       negative, together, so both read true once burned light on black.
    5. *Engrave* — front and back as 1200 dpi PNG or SVG, exactly card size.

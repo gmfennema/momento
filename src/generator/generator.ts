@@ -82,6 +82,7 @@ interface State {
   textLine: string;
   voice: string;
   recordedAt: string;
+  dueDate: string;
   cardId: number;
   pcm: Int16Array | null;
   trim: TrimState;
@@ -191,9 +192,13 @@ export function mountGenerator(root: HTMLElement): void {
               <span>Whose voice</span>
               <input type="text" id="voice-line" maxlength="24" placeholder="Emma" autocomplete="off" />
             </label>
-            <label class="field">
+            <label class="field" id="recorded-field">
               <span>Recorded</span>
               <input type="date" id="recorded-date" />
+            </label>
+            <label class="field field-wide" id="due-field" hidden>
+              <span>Due date</span>
+              <input type="text" id="due-date" maxlength="20" placeholder="June 14, 2027" autocomplete="off" />
             </label>
             <div class="field field-wide" id="photo-field" hidden>
               <span>Ultrasound scan</span>
@@ -279,6 +284,7 @@ export function mountGenerator(root: HTMLElement): void {
     textLine: '',
     voice: '',
     recordedAt: todayIso(),
+    dueDate: '',
     cardId: randomCardId(),
     pcm: null,
     trim: { startSec: 0, endSec: 0 },
@@ -360,7 +366,8 @@ export function mountGenerator(root: HTMLElement): void {
       heartbeat: heart ? (slice ? (detectHeartbeat(slice, PCM_SAMPLE_RATE) ?? undefined) : SAMPLE_HEARTBEAT) : undefined,
       textLine: state.textLine.trim() || (state.pcm ? undefined : heart ? 'Baby Grace' : 'For Mom'),
       voice: heart ? undefined : state.voice.trim() || undefined,
-      recordedAt: state.recordedAt || undefined,
+      recordedAt: heart ? undefined : state.recordedAt || undefined,
+      dueDate: heart ? state.dueDate.trim() || undefined : undefined,
       widthMm,
       heightMm,
       cornerMm,
@@ -504,8 +511,9 @@ export function mountGenerator(root: HTMLElement): void {
     }
     const heart = kind === 'heartbeat';
     $('voice-field').hidden = heart;
-    // With no voice field beside it, the date takes the full row.
-    $('recorded-date').closest('.field')!.classList.toggle('field-wide', heart);
+    // Heartbeat cards carry the due date instead of the recording date.
+    $('recorded-field').hidden = heart;
+    $('due-field').hidden = !heart;
     $('photo-field').hidden = !heart;
     $<HTMLInputElement>('text-line').placeholder = heart ? 'Baby Grace' : 'For Mom';
     $('drop-main').textContent = heart
@@ -663,6 +671,11 @@ export function mountGenerator(root: HTMLElement): void {
   recordedInput.value = state.recordedAt;
   recordedInput.addEventListener('input', (e) => {
     state.recordedAt = (e.target as HTMLInputElement).value;
+    refreshFront();
+  });
+
+  $<HTMLInputElement>('due-date').addEventListener('input', (e) => {
+    state.dueDate = (e.target as HTMLInputElement).value;
     refreshFront();
   });
 

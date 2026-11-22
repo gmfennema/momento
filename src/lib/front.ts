@@ -72,6 +72,10 @@ export interface FrontInput {
   voice?: string;
   /** date recorded, 'YYYY-MM-DD'; rendered MM.DD.YY */
   recordedAt?: string;
+  /** heartbeat designs: the due date, free text as typed ("June 2027",
+   * "2027-06-14", "6/14/27"); a recognisable date renders MM.DD.YY, anything
+   * else uppercase as typed. Replaces the recording date on these designs. */
+  dueDate?: string;
   widthMm?: number;
   heightMm?: number;
   /** the blank's corner radius; the border follows it (default: metal card) */
@@ -269,14 +273,33 @@ function formatRecorded(iso: string): string {
   return m ? `${m[2]}.${m[3]}.${m[1]!.slice(2)}` : '';
 }
 
+/** A due date as engraved: a recognisable numeric date becomes MM.DD.YY,
+ * anything else ("June 2027") is kept, uppercase. */
+export function formatDue(raw: string): string {
+  const t = raw.trim().replace(/\s+/g, ' ');
+  if (!t) return '';
+  const iso = formatRecorded(t);
+  if (iso) return iso;
+  const us = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2}|\d{4})$/.exec(t);
+  if (us && +us[1]! >= 1 && +us[1]! <= 12 && +us[2]! >= 1 && +us[2]! <= 31) {
+    return `${us[1]!.padStart(2, '0')}.${us[2]!.padStart(2, '0')}.${us[3]!.slice(-2)}`;
+  }
+  return t.toUpperCase();
+}
+
 /** The clip's metadata fields, uppercase, absent ones omitted. */
 export function metadataParts(input: FrontInput): string[] {
   const parts: string[] = [];
   const isHeart = input.design === 'framed' || input.design === 'heartline';
   const voice = input.voice?.trim();
   if (voice && !isHeart) parts.push(`VOICE: ${voice.toUpperCase()}`);
-  const recorded = input.recordedAt ? formatRecorded(input.recordedAt) : '';
-  if (recorded) parts.push(`RECORDED: ${recorded}`);
+  if (isHeart) {
+    const due = input.dueDate ? formatDue(input.dueDate) : '';
+    if (due) parts.push(`DUE: ${due}`);
+  } else {
+    const recorded = input.recordedAt ? formatRecorded(input.recordedAt) : '';
+    if (recorded) parts.push(`RECORDED: ${recorded}`);
+  }
   if (isHeart && input.heartbeat) parts.push(`HEART RATE: ${input.heartbeat.bpm} BPM`);
   return parts;
 }
@@ -457,7 +480,7 @@ function framedMarks(input: FrontInput, W: number, H: number): Mark[] {
 }
 
 /** Heartline: the scan bleeds off the right edge and fades into the card to
- * its left; the title, date, heart trace and rate sit left-aligned in the
+ * its left; the title, due date, heart trace and rate sit left-aligned in the
  * clear space. */
 function heartlineMarks(input: FrontInput, W: number, H: number, cornerMm: number): Mark[] {
   const photoX = W * 0.38;
@@ -475,9 +498,10 @@ function heartlineMarks(input: FrontInput, W: number, H: number, cornerMm: numbe
     marks.push(text(name, x0, y, f, 'display', 'start', colW));
     y += f * 0.85;
   }
-  const recorded = input.recordedAt ? formatRecorded(input.recordedAt) : '';
+  const due = input.dueDate ? formatDue(input.dueDate) : '';
+  const dueLine = due ? `DUE ${due}` : '';
   const capsFont = H * 0.029;
-  if (recorded) marks.push(text(recorded, x0, y + capsFont * 0.9, capsFont, 'caps', 'start', colW));
+  if (dueLine) marks.push(text(dueLine, x0, y + capsFont * 0.9, capsFont, 'caps', 'start', colW));
   const amp = H * 0.2;
   const base = H * 0.64 + amp * 0.42;
   marks.push(heartTrace(input.heartbeat, 3, x0, W * 0.47, base, amp));
