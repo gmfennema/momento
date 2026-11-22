@@ -1,7 +1,10 @@
 // Card FRONT rendering — the human-facing side. Where the back is a dense
-// machine-readable QR mosaic, the front is the keepsake: the owner's title
-// across the top, the clip's waveform as a fine mirrored bar chart, and a
-// metadata line (or a nudge to flip the card over). No brand mark. Strictly monochrome — one
+// machine-readable QR mosaic, the front is the keepsake. It comes in designs:
+//   wave  — the owner's title across the top, the clip's waveform as a fine
+//           mirrored bar chart, and a metadata line (or a flip-me nudge).
+//   photo — a photo (an ultrasound, say) down the left, with the title, the
+//           waveform (a heartbeat) and the metadata stacked beside it.
+// No brand mark. Strictly monochrome — one
 // ink on one stock — so the same artwork prints, foils, or laser-engraves.
 // Same pattern as render.ts: one geometry pass feeding both an SVG string
 // (vector, print/laser) and a canvas drawer (preview + high-DPI PNG).
@@ -16,7 +19,30 @@ export const FRONT_BAR_COUNT = 72;
 /** Bars never collapse to nothing: silence renders as a dotted baseline. */
 export const MIN_BAR = 0.045;
 
+export type FrontDesign = 'wave' | 'photo';
+
+export const FRONT_DESIGNS: Record<FrontDesign, string> = {
+  wave: 'Waveform',
+  photo: 'Photo + heartbeat',
+};
+
+/** Bars in the photo design's narrower waveform column. */
+export const PHOTO_BAR_COUNT = 30;
+
+/** A photo ready to place: the same pixels as a canvas source (preview, PNG)
+ * and a data URL (embedded in the SVG). Already greyscale and levelled. */
+export interface FrontPhoto {
+  image: CanvasImageSource;
+  href: string;
+  width: number;
+  height: number;
+}
+
 export interface FrontInput {
+  /** which front design to draw (default: wave) */
+  design?: FrontDesign;
+  /** photo design only; the frame shows an empty placeholder without one */
+  photo?: FrontPhoto;
   /** normalized bar amplitudes, each in [MIN_BAR, 1] (see computeWaveformBars) */
   bars: number[];
   /** the card's title (e.g. "For Mom"), shown across the top */
@@ -93,9 +119,12 @@ export interface FrontLayout {
   baseline: { x1Mm: number; x2Mm: number; yMm: number; strokeMm: number };
   /** thin outline tracing the card's own edge and corners */
   border: { insetMm: number; radiusMm: number; strokeMm: number };
-  /** the title across the top; absent when the card has none */
+  /** the title; absent when the card has none */
   name?: TextSpec;
-  hint: TextSpec & { letterSpacingMm: number };
+  /** the metadata — one line on the wave design, stacked on the photo design */
+  hints: Array<TextSpec & { letterSpacingMm: number }>;
+  /** photo design: where the photo sits (cover-cropped into this frame) */
+  photo?: { xMm: number; yMm: number; wMm: number; hMm: number; radiusMm: number; strokeMm: number };
 }
 
 /** Letterspaced, middle-anchored text renders with a trailing space after the
@@ -125,6 +154,11 @@ function formatRecorded(iso: string): string {
  * the middot — SVG collapses runs of whitespace, so wider gaps wouldn't
  * survive export and would drift from the canvas preview. */
 function metadataLine(input: FrontInput): string {
+  const parts = metadataParts(input);
+  return parts.length ? parts.join(' · ') : 'SCAN THE BACK TO LISTEN';
+}
+
+function metadataParts(input: FrontInput): string[] {
   const parts: string[] = [];
   const voice = input.voice?.trim();
   if (voice) parts.push(`VOICE: ${voice.toUpperCase()}`);
@@ -133,10 +167,88 @@ function metadataLine(input: FrontInput): string {
   if (input.durationSec !== undefined && input.durationSec > 0) {
     parts.push(`DURATION: ${formatDuration(input.durationSec)}`);
   }
-  return parts.length ? parts.join(' · ') : 'SCAN THE BACK TO LISTEN';
+  return parts;
+}
+
+function borderFor(input: FrontInput): FrontLayout['border'] {
+  // A 0.2 mm outline on the very edge of the card, following the blank's
+  // corner radius. The stroke sits just inside the artboard so none of it is
+  // clipped off in the SVG or PNG.
+  return {
+    insetMm: BORDER_MM / 2,
+    radiusMm: Math.max(0, (input.cornerMm ?? CARD_SIZES[DEFAULT_CARD_SIZE].cornerMm) - BORDER_MM / 2),
+    strokeMm: BORDER_MM,
+  };
 }
 
 export function layoutFront(input: FrontInput): FrontLayout {
+  return input.design === 'photo' ? layoutPhotoFront(input) : layoutWaveFront(input);
+}
+
+/** Photo design: the photo fills a rounded frame down the left; the right
+ * column stacks the title, the waveform and the metadata, each centred in it.
+ * The bars stay ≥0.4 mm wide, so the column carries fewer of them. */
+function layoutPhotoFront(input: FrontInput): FrontLayout {
+  const W = input.widthMm ?? CARD_W_MM;
+  const H = input.heightMm ?? CARD_H_MM;
+  const margin = H * 0.1; // ≈5.4 mm: clear of the blank's rounded corners
+  const frameH = H - 2 * margin;
+  const aspect = input.photo ? input.photo.width / input.photo.height : 1;
+  // Follow the photo's shape within reason; a panorama is cropped, not
+  // allowed to crowd the column out.
+  const frameW = Math.min(W * 0.5, frameH * Math.min(1.2, Math.max(0.8, aspect)));
+  const gap = W * 0.05;
+  const colX1 = margin + frameW + gap;
+  const colX2 = W - margin * 0.9;
+  const colW = colX2 - colX1;
+  const colMid = (colX1 + colX2) / 2;
+  const name = input.textLine?.trim();
+
+  const waveCenterY = name ? H * 0.5 : H * 0.42;
+  const halfMax = H * 0.14;
+  const count = Math.max(1, input.bars.length);
+  const pitch = colW / count;
+  const barW = pitch * 0.45;
+  const bars: Array<[number, number, number, number]> = input.bars.map((v, i) => {
+    const h = Math.max(barW, Math.min(1, v) * 2 * halfMax);
+    return [colX1 + i * pitch + (pitch - barW) / 2, waveCenterY - h / 2, barW, h];
+  });
+
+  const nameBase = H * 0.07;
+  const nameFont = name
+    ? Math.min(nameBase, (colW * 0.95) / (0.52 * Math.max(1, name.length)))
+    : 0;
+
+  // Metadata stacks one field per line at the foot of the column; a field too
+  // long for the column shrinks (≈0.62 em per caps glyph plus tracking).
+  const parts = metadataParts(input);
+  const lines = parts.length ? parts : ['SCAN THE BACK', 'TO LISTEN'];
+  const longest = Math.max(...lines.map((l) => l.length));
+  const hintFont = Math.min(H * 0.03, colW / (longest * 0.74));
+  const hintLs = hintFont * 0.12;
+  const lineGap = hintFont * 1.75;
+  const lastY = H - margin - hintFont * 0.5;
+
+  return {
+    widthMm: W,
+    heightMm: H,
+    colors: PALETTE,
+    bars,
+    baseline: { x1Mm: colX1, x2Mm: colX2, yMm: waveCenterY, strokeMm: 0.1 },
+    border: borderFor(input),
+    name: name ? { xMm: colMid, yMm: margin + H * 0.06, fontMm: nameFont, text: name } : undefined,
+    hints: lines.map((text, i) => ({
+      xMm: colMid + hintLs / 2,
+      yMm: lastY - (lines.length - 1 - i) * lineGap,
+      fontMm: hintFont,
+      letterSpacingMm: hintLs,
+      text,
+    })),
+    photo: { xMm: margin, yMm: margin, wMm: frameW, hMm: frameH, radiusMm: 1.6, strokeMm: BORDER_MM },
+  };
+}
+
+function layoutWaveFront(input: FrontInput): FrontLayout {
   const W = input.widthMm ?? CARD_W_MM;
   const H = input.heightMm ?? CARD_H_MM;
   const margin = W * 0.09; // ≈8 mm on a standard card
@@ -171,22 +283,17 @@ export function layoutFront(input: FrontInput): FrontLayout {
     colors: PALETTE,
     bars,
     baseline: { x1Mm: margin, x2Mm: W - margin, yMm: waveCenterY, strokeMm: 0.1 },
-    // A 0.2 mm outline on the very edge of the card, following the blank's
-    // corner radius. The stroke sits just inside the artboard so none of it is
-    // clipped off in the SVG or PNG.
-    border: {
-      insetMm: BORDER_MM / 2,
-      radiusMm: Math.max(0, (input.cornerMm ?? CARD_SIZES[DEFAULT_CARD_SIZE].cornerMm) - BORDER_MM / 2),
-      strokeMm: BORDER_MM,
-    },
+    border: borderFor(input),
     name: name ? { xMm: W / 2, yMm: H * 0.19, fontMm: nameFont, text: name } : undefined,
-    hint: {
-      xMm: centeredX(W, hintLs),
-      yMm: H * 0.898,
-      fontMm: hintFont,
-      letterSpacingMm: hintLs,
-      text: metadataLine(input),
-    },
+    hints: [
+      {
+        xMm: centeredX(W, hintLs),
+        yMm: H * 0.898,
+        fontMm: hintFont,
+        letterSpacingMm: hintLs,
+        text: metadataLine(input),
+      },
+    ],
   };
 }
 
@@ -214,6 +321,20 @@ export function renderFrontSvg(input: FrontInput): string {
       `width="${fmt(L.widthMm - 2 * L.border.insetMm)}" height="${fmt(L.heightMm - 2 * L.border.insetMm)}" ` +
       `rx="${fmt(L.border.radiusMm)}" fill="none" stroke="${c.ink}" stroke-width="${L.border.strokeMm}"/>`,
   );
+  if (L.photo) {
+    const p = L.photo;
+    const box = `x="${fmt(p.xMm)}" y="${fmt(p.yMm)}" width="${fmt(p.wMm)}" height="${fmt(p.hMm)}" rx="${fmt(p.radiusMm)}"`;
+    if (input.photo) {
+      // xMidYMid slice is the same centred cover-crop the canvas draws.
+      parts.push(
+        `<clipPath id="photo-frame"><rect ${box}/></clipPath>`,
+        `<image href="${input.photo.href}" x="${fmt(p.xMm)}" y="${fmt(p.yMm)}" ` +
+          `width="${fmt(p.wMm)}" height="${fmt(p.hMm)}" preserveAspectRatio="xMidYMid slice" ` +
+          `clip-path="url(#photo-frame)"/>`,
+      );
+    }
+    parts.push(`<rect ${box} fill="none" stroke="${c.ink}" stroke-width="${p.strokeMm}"/>`);
+  }
   for (const [x, y, w, h] of L.bars) {
     parts.push(
       `<rect x="${fmt(x)}" y="${fmt(y)}" width="${fmt(w)}" height="${fmt(h)}" ` +
@@ -221,9 +342,9 @@ export function renderFrontSvg(input: FrontInput): string {
     );
   }
   if (L.name) parts.push(text(L.name, {}));
-  parts.push(
-    text(L.hint, { opacity: SECONDARY_OPACITY, letterSpacingMm: L.hint.letterSpacingMm }),
-  );
+  for (const h of L.hints) {
+    parts.push(text(h, { opacity: SECONDARY_OPACITY, letterSpacingMm: h.letterSpacingMm }));
+  }
   parts.push('</svg>');
   return parts.join('\n');
 
@@ -280,6 +401,41 @@ export function drawFront(
   );
   ctx.stroke();
 
+  if (L.photo) {
+    const p = L.photo;
+    const frame = () => {
+      ctx.beginPath();
+      roundedRectPath(ctx, px(p.xMm), px(p.yMm), px(p.wMm), px(p.hMm), px(p.radiusMm));
+    };
+    if (input.photo) {
+      // Centred cover-crop: the photo fills the frame, the overflow is cut.
+      const ph = input.photo;
+      const scale = Math.max(p.wMm / ph.width, p.hMm / ph.height);
+      const sw = p.wMm / scale;
+      const sh = p.hMm / scale;
+      ctx.save();
+      frame();
+      ctx.clip();
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(
+        ph.image,
+        (ph.width - sw) / 2,
+        (ph.height - sh) / 2,
+        sw,
+        sh,
+        px(p.xMm),
+        px(p.yMm),
+        px(p.wMm),
+        px(p.hMm),
+      );
+      ctx.restore();
+    }
+    ctx.strokeStyle = c.ink;
+    ctx.lineWidth = Math.max(1, px(p.strokeMm));
+    frame();
+    ctx.stroke();
+  }
+
   ctx.fillStyle = c.ink;
   ctx.beginPath();
   for (const [x, y, w, h] of L.bars) roundedRectPath(ctx, px(x), px(y), px(w), px(h), px(w) / 2);
@@ -292,15 +448,18 @@ export function drawFront(
   // assignment and the letterspaced lines just render a touch tighter.
   ctx.save();
   ctx.globalAlpha = SECONDARY_OPACITY;
-  ctx.font = `${px(L.hint.fontMm)}px ${FONT_SERIF}`;
-  ctx.letterSpacing = `${px(L.hint.letterSpacingMm)}px`;
-  ctx.fillText(L.hint.text, px(L.hint.xMm), px(L.hint.yMm));
+  for (const h of L.hints) {
+    ctx.font = `${px(h.fontMm)}px ${FONT_SERIF}`;
+    ctx.letterSpacing = `${px(h.letterSpacingMm)}px`;
+    ctx.fillText(h.text, px(h.xMm), px(h.yMm));
+  }
   ctx.letterSpacing = '0px';
   ctx.restore();
 
   if (L.name) {
     ctx.font = `${px(L.name.fontMm)}px ${FONT_SERIF}`;
-    ctx.fillText(L.name.text, px(L.name.xMm), px(L.name.yMm), px(L.widthMm) * 0.85);
+    const maxW = L.photo ? L.widthMm - L.photo.xMm - L.photo.wMm - 2 * L.photo.xMm : L.widthMm * 0.85;
+    ctx.fillText(L.name.text, px(L.name.xMm), px(L.name.yMm), px(maxW));
   }
 }
 

@@ -52,12 +52,17 @@ import { chunkMatrix, entryMatrix } from '../lib/qr';
 import {
   computeWaveformBars,
   drawFront,
+  FRONT_DESIGNS,
+  PHOTO_BAR_COUNT,
+  type FrontDesign,
+  type FrontPhoto,
   FRONT_BAR_COUNT,
   renderFrontSvg,
   type FrontInput,
 } from '../lib/front';
 import { cardTexture, DEFAULT_BURN_MM, drawCard, renderSvg, type RenderInput } from '../lib/render';
 import { brandHeader } from '../lib/brand';
+import { decodePhoto, tonePhoto } from '../lib/photo';
 import { startRecording, type RecorderHandle } from './recorder';
 import { attachTrim, type TrimHandle, type TrimState } from './trim';
 
@@ -84,6 +89,13 @@ interface State {
   textLine: string;
   voice: string;
   recordedAt: string; // 'YYYY-MM-DD' (front metadata line), '' if cleared
+  frontDesign: FrontDesign;
+  /** photo design: the chosen photo, decoded — memory only, never stored */
+  photoBitmap: ImageBitmap | null;
+  /** photo design: engrave the photo as a negative so it reads true on black */
+  photoNegative: boolean;
+  /** the toned photo for the current bitmap + polarity */
+  photo: FrontPhoto | null;
   cardId: number;
   // derived
   tier: Tier | null;
@@ -163,6 +175,22 @@ export function mountGenerator(root: HTMLElement): void {
         <p class="hint" style="margin:0">A laser burns slightly wider than the artwork, which thins the
           dots it leaves behind until phones can't read them. The card is drawn to cancel that out —
           if your engraved dots still look thin next to the gaps between them, go up a step.</p>
+        <label>Front design
+          <select id="front-design">
+            ${(Object.keys(FRONT_DESIGNS) as FrontDesign[])
+              .map((k) => `<option value="${k}">${FRONT_DESIGNS[k]}</option>`)
+              .join('')}
+          </select>
+        </label>
+        <div id="photo-opts" class="options" style="display:none; flex-basis:100%">
+          <input type="file" id="photo-input" accept="image/*" hidden />
+          <button id="photo-btn">Choose photo</button>
+          <span class="hint" id="photo-status" style="flex-basis:auto">No photo yet — it stays in this browser tab only.</span>
+          <label><input type="checkbox" id="photo-negative" checked /> Black card (photo becomes a negative so it engraves true)</label>
+          <p class="hint" style="margin:0">Laser software engraves the dark parts of the artwork, and on black
+            metal those come out light — so for a black card the photo is drawn as a negative. Untick for
+            light cards or printing. Let your laser software dither the photo (e.g. Jarvis or Stucki).</p>
+        </div>
         <label>Title (front) <input type="text" id="text-line" placeholder="e.g. For Mom" maxlength="40" /></label>
         <label>Voice <input type="text" id="voice-line" placeholder="e.g. Emma" maxlength="24" /></label>
         <label>Recorded <input type="date" id="recorded-date" /></label>
@@ -215,6 +243,10 @@ export function mountGenerator(root: HTMLElement): void {
     textLine: '',
     voice: '',
     recordedAt: todayIso(),
+    frontDesign: 'wave',
+    photoBitmap: null,
+    photoNegative: true,
+    photo: null,
     cardId: randomCardId(),
     tier: null,
     depth: 0,
@@ -682,6 +714,64 @@ export function mountGenerator(root: HTMLElement): void {
     state.recordedAt = (e.target as HTMLInputElement).value;
     scheduleUpdate();
   });
+  const photoInput = $<HTMLInputElement>('photo-input');
+  $<HTMLSelectElement>('front-design').addEventListener('change', (e) => {
+    state.frontDesign = (e.target as HTMLSelectElement).value as FrontDesign;
+    $('photo-opts').style.display = state.frontDesign === 'photo' ? 'flex' : 'none';
+    refreshFront();
+  });
+  $('photo-btn').addEventListener('click', () => photoInput.click());
+  photoInput.addEventListener('change', async () => {
+    const file = photoInput.files?.[0];
+    photoInput.value = '';
+    if (!file) return;
+    try {
+      const bitmap = await decodePhoto(file);
+      state.photoBitmap?.close();
+      state.photoBitmap = bitmap;
+      state.photo = tonePhoto(bitmap, state.photoNegative);
+      $('photo-status').textContent = `${file.name} (${bitmap.width}×${bitmap.height}) — kept in this tab only`;
+      setError(null);
+      refreshFront();
+    } catch {
+      setError("Couldn't read that photo. Try a JPEG or PNG.");
+    }
+  });
+  $<HTMLInputElement>('photo-negative').addEventListener('change', (e) => {
+    state.photoNegative = (e.target as HTMLInputElement).checked;
+    if (state.photoBitmap) state.photo = tonePhoto(state.photoBitmap, state.photoNegative);
+    refreshFront();
+  });
+
+  /** Front-only changes (design, photo) redraw without touching the encode. */
+  function refreshFront(): void {
+    if (!state.pcm || !state.plan) return;
+    state.frontInput = buildFrontInput(state.plan);
+    renderPreview();
+  }
+
+  function buildFrontInput(plan: CardPlan): FrontInput {
+    const pcm = state.pcm!;
+    const photoDesign = state.frontDesign === 'photo';
+    // The front shows the same slice of audio the back encodes, and carries
+    // all the human-facing type — the back is codes and "SCAN TO LISTEN".
+    return {
+      design: state.frontDesign,
+      photo: photoDesign ? (state.photo ?? undefined) : undefined,
+      bars: computeWaveformBars(
+        slicePcm(pcm, state.trim.startSec, state.trim.endSec),
+        photoDesign ? PHOTO_BAR_COUNT : FRONT_BAR_COUNT,
+      ),
+      textLine: state.textLine.trim() || undefined,
+      voice: state.voice.trim() || undefined,
+      recordedAt: state.recordedAt || undefined,
+      durationSec: state.trim.endSec - state.trim.startSec,
+      widthMm: plan.widthMm,
+      heightMm: plan.heightMm,
+      cornerMm: CARD_SIZES[state.cardSize].cornerMm,
+    };
+  }
+
   $('test-scan').addEventListener('click', () => {
     const h = $('test-hint');
     h.style.display = h.style.display === 'none' ? 'block' : 'none';
@@ -742,21 +832,7 @@ export function mountGenerator(root: HTMLElement): void {
       state.encoded = encoded;
       state.plan = plan;
       state.renderInput = renderInput;
-      // The front shows the same slice of audio the back encodes, and carries
-      // all the human-facing type — the back is codes and "SCAN TO LISTEN".
-      state.frontInput = {
-        bars: computeWaveformBars(
-          slicePcm(state.pcm, state.trim.startSec, state.trim.endSec),
-          FRONT_BAR_COUNT,
-        ),
-        textLine: state.textLine.trim() || undefined,
-        voice: state.voice.trim() || undefined,
-        recordedAt: state.recordedAt || undefined,
-        durationSec: seconds,
-        widthMm: plan.widthMm,
-        heightMm: plan.heightMm,
-        cornerMm: CARD_SIZES[state.cardSize].cornerMm,
-      };
+      state.frontInput = buildFrontInput(plan);
       renderPreview();
     } catch (e) {
       if (seq === encodeSeq) {
