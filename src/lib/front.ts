@@ -72,8 +72,6 @@ export interface FrontInput {
   voice?: string;
   /** date recorded, 'YYYY-MM-DD'; rendered MM.DD.YY */
   recordedAt?: string;
-  /** clip length in seconds; rendered MM:SS */
-  durationSec?: number;
   widthMm?: number;
   heightMm?: number;
   /** the blank's corner radius; the border follows it (default: metal card) */
@@ -266,11 +264,6 @@ function text(
 
 // --- metadata ---
 
-function formatDuration(seconds: number): string {
-  const total = Math.max(0, Math.round(seconds));
-  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
-}
-
 function formatRecorded(iso: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso.trim());
   return m ? `${m[2]}.${m[3]}.${m[1]!.slice(2)}` : '';
@@ -284,9 +277,6 @@ export function metadataParts(input: FrontInput): string[] {
   if (voice && !isHeart) parts.push(`VOICE: ${voice.toUpperCase()}`);
   const recorded = input.recordedAt ? formatRecorded(input.recordedAt) : '';
   if (recorded) parts.push(`RECORDED: ${recorded}`);
-  if (input.durationSec !== undefined && input.durationSec > 0) {
-    parts.push(`DURATION: ${formatDuration(input.durationSec)}`);
-  }
   if (isHeart && input.heartbeat) parts.push(`HEART RATE: ${input.heartbeat.bpm} BPM`);
   return parts;
 }
@@ -491,10 +481,7 @@ function heartlineMarks(input: FrontInput, W: number, H: number, cornerMm: numbe
   const amp = H * 0.2;
   const base = H * 0.64 + amp * 0.42;
   marks.push(heartTrace(input.heartbeat, 3, x0, W * 0.47, base, amp));
-  const foot: string[] = [];
-  if (input.heartbeat) foot.push(`${input.heartbeat.bpm} BPM`);
-  if (input.durationSec !== undefined && input.durationSec > 0) foot.push(formatDuration(input.durationSec));
-  const footLine = foot.length ? foot.join('   ') : 'SCAN THE BACK TO LISTEN';
+  const footLine = input.heartbeat ? `${input.heartbeat.bpm} BPM` : 'SCAN THE BACK TO LISTEN';
   marks.push(text(footLine, x0, H * 0.875, fitFont(footLine, capsFont, colW, 'caps', 0.14), 'caps', 'start', colW));
   return marks;
 }

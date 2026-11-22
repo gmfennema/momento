@@ -54,7 +54,6 @@ function input(design: FrontDesign, over: Partial<FrontInput> = {}): FrontInput 
     textLine: heart ? 'Baby Grace' : 'For Mom',
     voice: heart ? undefined : 'Emma',
     recordedAt: '2026-11-20',
-    durationSec: 9,
     photo: heart ? photo : undefined,
     heartbeat: heart ? { bpm: 152, beats: [1, 0.8, 0.9, 0.85] } : undefined,
     ...over,
@@ -183,15 +182,15 @@ describe('designs', () => {
 
 describe('wave', () => {
   it('builds the metadata line: uppercase voice, MM.DD.YY date, MM:SS duration', () => {
-    const t = texts(layoutFront(input('wave', { recordedAt: '2021-06-18', durationSec: 8 })));
-    expect(t.at(-1)!.text).toBe('VOICE: EMMA · RECORDED: 06.18.21 · DURATION: 00:08');
+    const t = texts(layoutFront(input('wave', { recordedAt: '2021-06-18' })));
+    expect(t.at(-1)!.text).toBe('VOICE: EMMA · RECORDED: 06.18.21');
   });
 
   it('omits absent fields, drops a malformed date, and nudges when nothing is known', () => {
     const line = (o: Partial<FrontInput>) => texts(layoutFront(input('wave', o))).at(-1)!.text;
-    expect(line({ voice: undefined, recordedAt: undefined, durationSec: 75 })).toBe('DURATION: 01:15');
-    expect(line({ recordedAt: 'nonsense', voice: undefined })).toBe('DURATION: 00:09');
-    expect(line({ voice: undefined, recordedAt: undefined, durationSec: undefined })).toBe('SCAN THE BACK TO LISTEN');
+    expect(line({ recordedAt: undefined })).toBe('VOICE: EMMA');
+    expect(line({ recordedAt: 'nonsense' })).toBe('VOICE: EMMA');
+    expect(line({ voice: undefined, recordedAt: undefined })).toBe('SCAN THE BACK TO LISTEN');
   });
 
   it('bars are mirrored around one centre line', () => {
@@ -227,7 +226,7 @@ describe('ring', () => {
     const [r] = ofKind(L, 'radial');
     const right = r!.cxMm + r!.r0Mm + Math.max(...r!.bars.map(([, l]) => l));
     const details = texts(L).filter((t) => t.role === 'caps');
-    expect(details.map((t) => t.text)).toEqual(['VOICE: EMMA', 'RECORDED: 11.20.26', 'DURATION: 00:09']);
+    expect(details.map((t) => t.text)).toEqual(['VOICE: EMMA', 'RECORDED: 11.20.26']);
     for (const t of details) expect(t.xMm).toBeGreaterThan(right);
   });
 });
@@ -248,7 +247,7 @@ describe('heartbeat designs', () => {
     expect(p!.clipToCard).toBe(true);
     expect(p!.xMm + p!.wMm).toBeCloseTo(CARD_W_MM, 6);
     expect(p!.fadeMm).toBeGreaterThan(p!.wMm * 0.25);
-    expect(texts(L).map((t) => t.text)).toContain('152 BPM   00:09');
+    expect(texts(L).map((t) => t.text)).toContain('152 BPM');
     const svg = renderFrontSvg(input('heartline'));
     expect(svg).toContain('<mask');
     expect(svg).toContain(`href="${photo.href}"`);
@@ -260,6 +259,10 @@ describe('heartbeat designs', () => {
       expect(ofKind(L, 'placeholder').length).toBe(1);
       expect(renderFrontSvg(input(d, { photo: undefined }))).not.toContain('<image');
     }
+  });
+
+  it('no card shows the clip length', () => {
+    for (const d of ALL) expect(texts(layoutFront(input(d))).map((t) => t.text).join()).not.toMatch(/DURATION|\d\d:\d\d/);
   });
 
   it('a voice field never shows on a heartbeat card', () => {

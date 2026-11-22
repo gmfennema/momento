@@ -361,7 +361,6 @@ export function mountGenerator(root: HTMLElement): void {
       textLine: state.textLine.trim() || (state.pcm ? undefined : heart ? 'Baby Grace' : 'For Mom'),
       voice: heart ? undefined : state.voice.trim() || undefined,
       recordedAt: state.recordedAt || undefined,
-      durationSec: slice ? slice.length / PCM_SAMPLE_RATE : 8,
       widthMm,
       heightMm,
       cornerMm,
