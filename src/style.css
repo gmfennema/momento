@@ -568,7 +568,8 @@ canvas.waveform {
   width: 100%;
   border-radius: 10px;
   display: block;
-  border: 1px solid var(--hairline-soft);
+  /* faint grey edge so a black card still reads against the black page */
+  border: 1px solid rgba(160, 160, 160, 0.35);
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
 }
 
