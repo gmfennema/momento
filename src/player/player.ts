@@ -280,37 +280,28 @@ export function mountPlayer(root: HTMLElement): void {
 
   async function showDecoding(card: AssembledCard): Promise<void> {
     scanner = null;
-    // The card says what it holds: its format version names the codec, so a
-    // heartbeat card and a voice card each get their own words from here on.
-    const what = card.version === WIRE_PULSE ? 'heartbeat' : 'voice';
+    // No caption over the animation; the note only speaks up for a voice
+    // card's long first-time download.
     stage.innerHTML = `
       <div class="extract-stage" id="extract-stage"></div>
-      <p class="hint extract-note" aria-live="polite">Reading the card…</p>`;
+      <p class="hint extract-note" aria-live="polite"></p>`;
     const note = stage.querySelector<HTMLElement>('.extract-note')!;
     // The codes come apart into the sound while it is being rebuilt.
     extraction?.stop();
     const ext = startExtraction(stage.querySelector<HTMLElement>('#extract-stage')!, card.data, card.chunks);
     extraction = ext;
-    let statusShown = false;
-    const caption = setTimeout(() => {
-      if (!statusShown) note.textContent = `Extracting the ${what} from the card…`;
-    }, 850);
     try {
       const { version, modeId, data } = card;
       // Same pipeline the generator previews with.
       const restored = await decodeForPlayback(version, modeId, data, (msg) => {
         // Only the long first-time fetch is worth a word over the animation.
-        if (msg.includes('MB')) {
-          statusShown = true;
-          note.textContent = msg;
-        }
+        if (msg.includes('MB')) note.textContent = msg;
       });
       pcm = restored.pcm;
       pcmRate = restored.sampleRate;
       restoration = restored.restoration;
       clearStashedCard();
-      clearTimeout(caption);
-      note.textContent = `Extracting the ${what} from the card…`;
+      note.textContent = '';
       await ext.finish(restored.pcm, restored.sampleRate);
       if (extraction !== ext) return; // the listener moved on mid-animation
       showReady();
@@ -318,7 +309,6 @@ export function mountPlayer(root: HTMLElement): void {
       // The screens below are deliberately plain; the console keeps the cause
       // for anyone debugging a phone over USB.
       console.error('Kept: could not rebuild the audio', e);
-      clearTimeout(caption);
       ext.stop();
       extraction = null;
       clearStashedCard(); // the timeout branch below re-stashes; nothing else should resume
