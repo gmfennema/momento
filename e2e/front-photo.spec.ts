@@ -115,7 +115,8 @@ test('every design renders, downloads, and the heartbeat ones embed the scan', a
     expect(svg).toContain('width="85.6mm"');
     if (kind === 'heartbeat') {
       expect(svg).toContain('<image href="data:image/png;base64,');
-      expect(svg).toContain('<polyline'); // the heart-monitor trace
+      expect((svg.match(/<rect /g) ?? []).length).toBeGreaterThan(40); // the recording's own wave
+      expect(svg).not.toContain('<polyline'); // no stock heart-monitor trace
       expect(svg).not.toContain('stroke-dasharray'); // no placeholder left in
       expect(svg).toContain('06.14.27');
       expect(svg).not.toContain('RECORDED');

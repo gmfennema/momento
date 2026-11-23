@@ -41,6 +41,7 @@ import {
   computeWaveformBars,
   designsFor,
   detectHeartbeat,
+  computeHeartWave,
   drawFront,
   FONT_FAMILIES,
   FRONT_BAR_COUNT,
@@ -362,11 +363,13 @@ export function mountGenerator(root: HTMLElement): void {
     const heart = FRONT_DESIGNS[d].kind === 'heartbeat';
     const count = d === 'ring' ? RING_BAR_COUNT : FRONT_BAR_COUNT;
     const slice = state.pcm ? slicePcm(state.pcm, state.trim.startSec, state.trim.endSec) : null;
+    const hb = heart ? (slice ? (detectHeartbeat(slice, PCM_SAMPLE_RATE) ?? undefined) : SAMPLE_HEARTBEAT) : undefined;
     return {
       design: d,
       bars: slice ? computeWaveformBars(slice, count) : sampleBars(count),
       photo: heart ? (state.photo ?? undefined) : undefined,
-      heartbeat: heart ? (slice ? (detectHeartbeat(slice, PCM_SAMPLE_RATE) ?? undefined) : SAMPLE_HEARTBEAT) : undefined,
+      heartbeat: heart ? hb : undefined,
+      heartWave: heart && slice ? computeHeartWave(slice, PCM_SAMPLE_RATE, hb?.bpm) : undefined,
       textLine: state.textLine.trim() || (state.pcm ? undefined : heart ? 'Baby Grace' : 'For Mom'),
       voice: heart ? undefined : state.voice.trim() || undefined,
       recordedAt: heart ? undefined : state.recordedAt || undefined,

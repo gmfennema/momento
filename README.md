@@ -42,9 +42,9 @@ now serves only a redirect from there to the new domain (see
       voice: **Classic wave** (title, mirrored waveform, one line of details) or
       **Ring** (the waveform wrapped around an initial, details beside it);
       heartbeat: **Framed** (the ultrasound scan in a frame beside a
-      heart-monitor trace) or **Heartline** (the scan fading in from the card's
-      edge). The trace follows the clip's detected beats and prints the heart
-      rate. The scan stays in the browser tab only.
+      few beats of the recording's own sound wave) or **Heartline** (the scan
+      fading in from the card's edge). The wave is the clearest stretch of the
+      real recording, not an illustration; the heart rate is measured from it. The scan stays in the browser tab only.
    4. *Details* — title, voice and recording date (or, on a heartbeat card, the due date), the scan, and the **card stock**. Black
       metal (the default) inverts the back's codes *and* engraves the scan as a
       negative, together, so both read true once burned light on black.

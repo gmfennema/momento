@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { CARD_H_MM, CARD_W_MM } from '../src/lib/layout';
 import {
   computeWaveformBars,
+  computeHeartWave,
+  HEART_WAVE_COLUMNS,
   designsFor,
   detectHeartbeat,
   FRONT_BAR_COUNT,
@@ -294,10 +296,46 @@ describe('heartbeat designs', () => {
     expect(metadataParts(input('framed', { voice: 'Emma' })).join()).not.toContain('VOICE');
   });
 
-  it('without a detected beat the trace still draws, with no rate', () => {
+  it('without a detected beat the wave still draws, with no rate', () => {
     const L = layoutFront(input('framed', { heartbeat: undefined }));
-    expect(ofKind(L, 'line').length).toBe(1);
+    expect(ofKind(L, 'bars').length).toBe(1);
     expect(texts(L).map((t) => t.text).join()).not.toContain('BPM');
+  });
+
+  it('draws the recording itself, not a stock trace', () => {
+    for (const d of ['framed', 'heartline'] as const) {
+      const a = ofKind(layoutFront(input(d, { heartWave: computeHeartWave(doppler(6, 150), 16000, 150) })), 'bars')[0]!;
+      const b = ofKind(layoutFront(input(d, { heartWave: computeHeartWave(doppler(6, 120), 16000, 120) })), 'bars')[0]!;
+      expect(ofKind(layoutFront(input(d)), 'line').length).toBe(0); // no heart-monitor line
+      expect(JSON.stringify(a.rects)).not.toBe(JSON.stringify(b.rects)); // different sound, different wave
+      // every column is at least the thinnest engravable line, with stock between
+      for (const [, , w, h] of a.rects) {
+        expect(w).toBeGreaterThanOrEqual(MIN_STROKE_MM - 1e-9);
+        expect(h).toBeGreaterThanOrEqual(MIN_STROKE_MM - 1e-9);
+      }
+      for (let i = 1; i < a.rects.length; i++) expect(a.rects[i]![0] - a.rects[i - 1]![0] - a.rects[i - 1]![2]).toBeGreaterThanOrEqual(0.2);
+    }
+  });
+});
+
+describe('computeHeartWave', () => {
+  it('cuts a few beats of the real waveform, normalised, quiet between beats', () => {
+    const wave = computeHeartWave(doppler(6, 150), 16000, 150);
+    expect(wave.length).toBe(HEART_WAVE_COLUMNS);
+    for (const [mn, mx] of wave) {
+      expect(mn).toBeGreaterThanOrEqual(-1);
+      expect(mx).toBeLessThanOrEqual(1);
+      expect(mn).toBeLessThanOrEqual(mx);
+    }
+    const mags = wave.map(([mn, mx]) => mx - mn);
+    // loud beats and near-silent gaps both present: it's a beating sound, not a flat block
+    expect(Math.max(...mags)).toBeGreaterThan(1.5);
+    expect(Math.min(...mags)).toBeLessThan(0.3);
+  });
+
+  it('copes with silence and an empty clip', () => {
+    expect(computeHeartWave(new Int16Array(16000 * 3), 16000).every(([a, b]) => a === 0 && b === 0)).toBe(true);
+    expect(computeHeartWave(new Int16Array(0), 16000).length).toBe(HEART_WAVE_COLUMNS);
   });
 });
 

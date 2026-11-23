@@ -64,8 +64,11 @@ export interface FrontInput {
   /** heartbeat designs: the photo; a placeholder frame shows without one */
   photo?: FrontPhoto;
   /** heartbeat designs: detected beat (see detectHeartbeat); without one the
-   * trace draws even beats and no rate */
+   * card shows no rate */
   heartbeat?: Heartbeat;
+  /** heartbeat designs: the recording's own sound wave (see computeHeartWave);
+   * without one a sample wave stands in */
+  heartWave?: HeartWave;
   /** the card's title (e.g. "For Mom") */
   textLine?: string;
   /** speaker credit (voice designs), e.g. "Emma" */
@@ -162,6 +165,85 @@ export function detectHeartbeat(pcm: Int16Array, sampleRate: number): Heartbeat 
   }
   const top = Math.max(...beats);
   return { bpm: Math.round(6000 / period), beats: beats.map((v) => (top > 0 ? v / top : 1)) };
+}
+
+/** The heartbeat as engraved: the recording's actual sound wave over a few
+ * beats, as [min, max] per column in [−1, 1]. Not an illustration — the
+ * doppler's own whooshes, exactly as recorded. */
+export type HeartWave = Array<[number, number]>;
+
+/** Columns a heart wave is computed at; layouts merge them down to what the
+ * laser can resolve. */
+export const HEART_WAVE_COLUMNS = 480;
+
+/**
+ * Cut the clearest TRACE_BEATS-beat stretch out of a heartbeat clip and reduce
+ * it to min/max columns. "Clearest" = the window whose loudness swings the
+ * most between beats, so the beats read as beats. Without a detected rate the
+ * window assumes 140 bpm. Normalised to the window's 99th-percentile level so
+ * one stray click can't flatten everything else.
+ */
+export function computeHeartWave(pcm: Int16Array, sampleRate: number, bpm?: number): HeartWave {
+  const cols = HEART_WAVE_COLUMNS;
+  if (pcm.length === 0) return Array.from({ length: cols }, () => [0, 0] as [number, number]);
+  const hop = Math.max(1, Math.round(sampleRate / 100));
+  const frames = Math.floor(pcm.length / hop);
+  const winFrames = Math.min(frames, Math.round((TRACE_BEATS * 6000) / (bpm ?? 140)));
+  let start = 0;
+  if (frames > winFrames) {
+    const env = new Float64Array(frames);
+    for (let i = 0; i < frames; i++) {
+      let sum = 0;
+      for (let j = i * hop; j < (i + 1) * hop; j++) sum += (pcm[j]! / 32768) ** 2;
+      env[i] = Math.sqrt(sum / hop);
+    }
+    let best = -1;
+    for (let i = 0; i + winFrames <= frames; i += 2) {
+      let mx = 0;
+      let mn = Infinity;
+      for (let j = i; j < i + winFrames; j++) {
+        const v = (env[j - 1] ?? env[j]!) / 3 + env[j]! / 3 + (env[j + 1] ?? env[j]!) / 3;
+        if (v > mx) mx = v;
+        if (v < mn) mn = v;
+      }
+      const score = mx > 0 ? (mx - mn) / mx : 0;
+      if (score > best) {
+        best = score;
+        start = i;
+      }
+    }
+  }
+  const s0 = start * hop;
+  const len = Math.max(1, Math.min(pcm.length - s0, winFrames * hop));
+  const out: HeartWave = [];
+  const mags: number[] = [];
+  for (let c = 0; c < cols; c++) {
+    const a = s0 + Math.floor((c * len) / cols);
+    const b = Math.max(a + 1, s0 + Math.floor(((c + 1) * len) / cols));
+    let mn = 0;
+    let mx = 0;
+    for (let j = a; j < b; j++) {
+      const v = pcm[j]! / 32768;
+      if (v < mn) mn = v;
+      if (v > mx) mx = v;
+    }
+    out.push([mn, mx]);
+    mags.push(Math.max(-mn, mx));
+  }
+  const ref = [...mags].sort((x, y) => x - y)[Math.floor(cols * 0.99)] || 1;
+  return out.map(([mn, mx]) => [Math.max(-1, mn / ref), Math.min(1, mx / ref)]);
+}
+
+/** A stand-in heart wave for previews before there is a recording: two
+ * whooshes a beat, like a doppler, with deterministic grain. */
+export function sampleHeartWave(): HeartWave {
+  let seed = 7;
+  const rand = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32);
+  return Array.from({ length: HEART_WAVE_COLUMNS }, (_, c) => {
+    const ph = ((c / HEART_WAVE_COLUMNS) * TRACE_BEATS) % 1;
+    const e = Math.exp(-(((ph - 0.2) / 0.08) ** 2)) + 0.62 * Math.exp(-(((ph - 0.52) / 0.1) ** 2)) + 0.05;
+    return [-Math.min(1, e * (0.35 + 0.65 * rand())), Math.min(1, e * (0.35 + 0.65 * rand()))] as [number, number];
+  });
 }
 
 // --- the marks every design is built from ---
@@ -327,30 +409,35 @@ export function monogram(input: FrontInput): string {
 
 /** One heartbeat on a monitor over u ∈ [0, 1]: flat, a small P bump, the sharp
  * Q-R-S spike, a rounded T wave, flat again. Heights in units of the R spike. */
-const ECG_BEAT: Array<[number, number]> = (() => {
-  const pts: Array<[number, number]> = [[0, 0], [0.12, 0]];
-  const bump = (u0: number, u1: number, h: number) => {
-    for (let i = 1; i <= 8; i++) pts.push([u0 + (u1 - u0) * (i / 8), h * Math.sin((Math.PI * i) / 8)]);
-  };
-  bump(0.12, 0.26, 0.11);
-  pts.push([0.34, 0], [0.38, -0.1], [0.43, 1], [0.48, -0.26], [0.52, 0], [0.6, 0]);
-  bump(0.6, 0.82, 0.2);
-  pts.push([1, 0]);
-  return pts;
-})();
+/** The heart wave's columns: as wide as any engraved bar may be thin
+ * (0.38 mm, the same floor as the voice waveform's bars), with stock between
+ * them the laser won't close up. */
+const WAVE_BAR_MM = 0.38;
+const WAVE_PITCH_MM = 0.6;
 
-/** The heart-monitor line from x1 to x2 with its baseline at `baseY` and its
- * tallest spike `amp` above it. Each spike follows that beat's real loudness
- * (never under 70%, so a quiet beat still reads as a beat). */
-function heartTrace(hb: Heartbeat | undefined, beats: number, x1: number, x2: number, baseY: number, amp: number) {
-  const slot = (x2 - x1) / beats;
-  const points: Array<[number, number]> = [];
-  for (let k = 0; k < beats; k++) {
-    const loud = hb?.beats.length ? hb.beats[k % hb.beats.length]! : 1;
-    const h = amp * (0.7 + 0.3 * loud);
-    for (const [u, v] of k === 0 ? ECG_BEAT : ECG_BEAT.slice(1)) points.push([x1 + (k + u) * slot, baseY - v * h]);
+/** The heart wave from x1 to x2, centred on `cy`, peaks reaching `half`
+ * above and below. `share` of the wave is drawn (Heartline shows 3 of 4
+ * beats). Each column is a min-to-max bar at the thinnest engravable width. */
+function heartWaveMark(wave: HeartWave, share: number, x1: number, x2: number, cy: number, half: number): Mark {
+  const src = wave.slice(0, Math.max(1, Math.round(wave.length * share)));
+  const n = Math.max(8, Math.floor((x2 - x1) / WAVE_PITCH_MM));
+  const pitch = (x2 - x1) / n;
+  const w = WAVE_BAR_MM;
+  const rects: Array<[number, number, number, number]> = [];
+  for (let i = 0; i < n; i++) {
+    const a = Math.floor((i * src.length) / n);
+    const b = Math.max(a + 1, Math.floor(((i + 1) * src.length) / n));
+    let mn = 0;
+    let mx = 0;
+    for (let k = a; k < b && k < src.length; k++) {
+      mn = Math.min(mn, src[k]![0]);
+      mx = Math.max(mx, src[k]![1]);
+    }
+    const top = cy - mx * half;
+    const h = Math.max(w, (mx - mn) * half);
+    rects.push([x1 + (i + 0.5) * pitch - w / 2, h === w ? cy - w / 2 : top, w, h]);
   }
-  return { kind: 'line' as const, points, strokeMm: 0.35 };
+  return { kind: 'bars', rects };
 }
 
 // --- layouts ---
@@ -467,9 +554,8 @@ function framedMarks(input: FrontInput, W: number, H: number): Mark[] {
   const mid = (colX1 + colX2) / 2;
   const name = input.textLine?.trim();
   if (name) marks.push(text(name, mid, margin + H * 0.065, fitFont(name, H * 0.08, colW * 0.95, 'display'), 'display', 'middle', colW));
-  const amp = H * 0.24;
-  const base = (name ? H * 0.5 : H * 0.44) + amp * 0.42;
-  marks.push(heartTrace(input.heartbeat, TRACE_BEATS, colX1, colX2, base, amp));
+  const wave = input.heartWave ?? sampleHeartWave();
+  marks.push(heartWaveMark(wave, 1, colX1, colX2, name ? H * 0.5 : H * 0.44, H * 0.13));
   const parts = metadataParts(input);
   const lines = parts.length ? parts : ['SCAN THE BACK', 'TO LISTEN'];
   const capsFont = Math.min(H * 0.029, ...lines.map((l) => fitFont(l, H * 0.029, colW, 'caps', 0.14)));
@@ -502,9 +588,8 @@ function heartlineMarks(input: FrontInput, W: number, H: number, cornerMm: numbe
   const dueLine = due ? `DUE ${due}` : '';
   const capsFont = H * 0.029;
   if (dueLine) marks.push(text(dueLine, x0, y + capsFont * 0.9, capsFont, 'caps', 'start', colW));
-  const amp = H * 0.2;
-  const base = H * 0.64 + amp * 0.42;
-  marks.push(heartTrace(input.heartbeat, 3, x0, W * 0.47, base, amp));
+  const wave = input.heartWave ?? sampleHeartWave();
+  marks.push(heartWaveMark(wave, 0.75, x0, W * 0.47, H * 0.635, H * 0.11));
   const footLine = input.heartbeat ? `${input.heartbeat.bpm} BPM` : 'SCAN THE BACK TO LISTEN';
   marks.push(text(footLine, x0, H * 0.875, fitFont(footLine, capsFont, colW, 'caps', 0.14), 'caps', 'start', colW));
   return marks;
