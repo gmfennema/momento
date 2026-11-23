@@ -35,12 +35,12 @@ export async function decodeForPlayback(
 ): Promise<RestoredAudio> {
   if (version === WIRE_MIMI) {
     // Wideband (24 kHz) by construction — nothing to restore.
-    onStatus?.('Rebuilding the voice…');
+    onStatus?.('Extracting the voice…');
     const pcm = await mimiDecode(data, mimiDepth(modeId), (loaded, total) => {
       onStatus?.(
         loaded < total
-          ? `Rebuilding the voice — fetching the model (${(loaded / 1048576).toFixed(1)} of ${Math.round(total / 1048576)} MB, one-time)…`
-          : 'Rebuilding the voice…',
+          ? `Extracting the voice — first time on this phone (${(loaded / 1048576).toFixed(1)} of ${Math.round(total / 1048576)} MB)…`
+          : 'Extracting the voice…',
       );
     });
     return { pcm, sampleRate: MIMI_SAMPLE_RATE, restoration: 'mimi' };

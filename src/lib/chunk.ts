@@ -172,7 +172,7 @@ export class ChunkCollector {
     return this.version;
   }
 
-  assemble(): { version: number; modeId: CodecModeId; data: Uint8Array } {
+  assemble(): { version: number; modeId: CodecModeId; data: Uint8Array; chunks: number } {
     if (!this.complete || this.total === null || this.modeId === null || this.version === null) {
       throw new Error('collector incomplete');
     }
@@ -185,7 +185,7 @@ export class ChunkCollector {
       data.set(p, o);
       o += p.length;
     }
-    return { version: this.version, modeId: this.modeId, data };
+    return { version: this.version, modeId: this.modeId, data, chunks: this.total };
   }
 
   reset(): void {

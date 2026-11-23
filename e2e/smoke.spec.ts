@@ -217,6 +217,8 @@ test('player: photo of a heartbeat card → Pulse decode → says it is a heartb
   await page.locator('#stage input[type="file"]').setInputFiles({ name: 'card.png', mimeType: 'image/png', buffer: png });
   await expect(page.locator('#play')).toBeVisible({ timeout: 30_000 });
   await expect(page.locator('#holds')).toContainText(/second heartbeat, rebuilt entirely from the card/);
+  // The codes' extraction leaves the sound's waveform on stage, above play.
+  await expect(page.locator('#extract-stage.settled canvas.extract')).toBeVisible();
 });
 
 test('generator: "Hear this card" plays the card through the player pipeline', async ({ page }) => {

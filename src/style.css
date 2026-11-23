@@ -751,3 +751,36 @@ footer a {
   font-size: 1.1rem;
   letter-spacing: 0;
 }
+
+/* ---- extraction: the codes coming apart into the sound ---- */
+
+.extract-stage {
+  width: 100%;
+  max-width: 560px;
+  height: 230px;
+  margin: 0.5rem auto 0;
+}
+
+.extract-stage canvas.extract {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.extract-note {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 1.05rem;
+  margin-top: 1rem;
+  min-height: 1.6em;
+}
+
+.extract-stage.settled + .big-play {
+  margin-top: 1.4rem;
+}
+
+@media (max-width: 520px) {
+  .extract-stage {
+    height: 190px;
+  }
+}

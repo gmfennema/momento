@@ -50,6 +50,8 @@ export function slicePcm(pcm: Int16Array, startSec: number, endSec: number): Int
 export interface Playback {
   stop(): void;
   done: Promise<void>;
+  /** how far through the clip playback is, 0–1 */
+  progress(): number;
 }
 
 /** Encode 16-bit mono PCM as a WAV blob. */
@@ -105,6 +107,7 @@ export function playPcm(pcm: Int16Array, sampleRate = PCM_SAMPLE_RATE): Playback
       finish();
     },
     done,
+    progress: () => (finished ? 1 : audio.duration > 0 ? Math.min(1, audio.currentTime / audio.duration) : 0),
   };
 }
 
