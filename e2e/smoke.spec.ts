@@ -200,8 +200,7 @@ test('player: photo of an engraved black-metal voice card → Mimi decode → sa
   await expect(page.locator('#upload')).toBeVisible();
   await page.locator('#stage input[type="file"]').setInputFiles({ name: 'card.png', mimeType: 'image/png', buffer: png });
   await expect(page.locator('#play')).toBeVisible({ timeout: 30_000 });
-  await expect(page.locator('#stage')).toContainText('rebuilt entirely from the card');
-  await expect(page.locator('#holds')).toContainText(/seconds of voice/);
+  await expect(page.locator('#play')).toHaveAttribute('aria-label', 'Play the voice');
 });
 
 test('player: photo of a heartbeat card → Pulse decode → says it is a heartbeat', async ({ page }) => {
@@ -216,7 +215,8 @@ test('player: photo of a heartbeat card → Pulse decode → says it is a heartb
   await page.goto('/momento/');
   await page.locator('#stage input[type="file"]').setInputFiles({ name: 'card.png', mimeType: 'image/png', buffer: png });
   await expect(page.locator('#play')).toBeVisible({ timeout: 30_000 });
-  await expect(page.locator('#holds')).toContainText(/second heartbeat, rebuilt entirely from the card/);
+  await expect(page.locator('#play')).toHaveAttribute('aria-label', 'Play the heartbeat');
+  await expect(page.locator('#stage')).not.toContainText('rebuilt entirely');
   // The codes' extraction leaves the sound's waveform on stage, above play.
   await expect(page.locator('#extract-stage.settled canvas.extract')).toBeVisible();
 });

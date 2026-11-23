@@ -784,3 +784,7 @@ footer a {
     height: 190px;
   }
 }
+
+.big-play ~ #again {
+  margin-top: 0.8rem;
+}

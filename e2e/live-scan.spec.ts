@@ -67,7 +67,6 @@ test('player: live scan reads a code, coaches a stalled scan, and a photo finish
     await expect(cam.locator('#count')).toHaveText('1 of 5');
     await (await chooser).setFiles({ name: 'card.png', mimeType: 'image/png', buffer: cardPng });
     await expect(cam.locator('#play')).toBeVisible({ timeout: 60_000 });
-    await expect(cam.locator('#stage')).toContainText('rebuilt entirely from the card');
   } finally {
     await browser.close();
     fs.rmSync(path.dirname(feed), { recursive: true, force: true });

@@ -363,11 +363,9 @@ export function mountPlayer(root: HTMLElement): void {
   }
 
   function showReady(): void {
-    const seconds = pcm ? (pcm.length / pcmRate).toFixed(1) : '?';
-    const holds =
-      restoration === 'pulse'
-        ? `A ${seconds}-second heartbeat, rebuilt entirely from the card.`
-        : `${seconds} seconds of voice, rebuilt entirely from the card.`;
+    // No caption: the waveform says it. The card's kind still names the
+    // button for screen readers.
+    const label = restoration === 'pulse' ? 'Play the heartbeat' : 'Play the voice';
     // CC-BY attribution for the model every Mimi listener downloads.
     const creditNote =
       restoration === 'mimi'
@@ -377,8 +375,7 @@ export function mountPlayer(root: HTMLElement): void {
     const wave = stage.querySelector<HTMLElement>('#extract-stage');
     stage.innerHTML = `
       <div id="wave-slot"></div>
-      <button class="big-play" id="play" aria-label="Play">▶</button>
-      <p class="hint" id="holds">${holds}</p>
+      <button class="big-play" id="play" aria-label="${label}">▶</button>
       ${creditNote}
       <button id="again">Scan another card</button>
     `;
