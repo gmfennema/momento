@@ -7,6 +7,7 @@
 // The card is always built with that codec; if it can't be, the station says
 // why and makes no card.
 
+import { BRAND, TAGLINE, waveMotif } from '../lib/brand';
 import { fileToFloat32, pcmToWavBlob, playPcm, slicePcm, MAX_SECONDS, PCM_SAMPLE_RATE, type Playback } from '../lib/audio';
 import {
   MimiDownloadError,
@@ -114,7 +115,9 @@ export function mountGenerator(root: HTMLElement): void {
 
   root.innerHTML = `
     <header class="st-head">
-      <span class="st-mark">Momento</span>
+      <span class="st-mark">${BRAND}</span>
+      ${waveMotif('st-wave')}
+      <span class="st-tag">${TAGLINE}</span>
       <span class="st-sub">Card station</span>
     </header>
 
@@ -654,7 +657,7 @@ export function mountGenerator(root: HTMLElement): void {
   $('download-wav-btn').addEventListener('click', () => {
     if (!state.pcm) return;
     const sliced = slicePcm(state.pcm, state.trim.startSec, state.trim.endSec);
-    downloadBlob(pcmToWavBlob(sliced, PCM_SAMPLE_RATE), 'momento-clip.wav');
+    downloadBlob(pcmToWavBlob(sliced, PCM_SAMPLE_RATE), 'kept-clip.wav');
   });
 
   // --- details ---
@@ -807,7 +810,7 @@ export function mountGenerator(root: HTMLElement): void {
       if (seq !== encodeSeq) return;
       // No card rather than a stale one.
       clearBack();
-      console.error('Momento: could not build the card', e);
+      console.error('Kept: could not build the card', e);
       $('card-summary').textContent = 'No back yet.';
       setError(
         e instanceof MimiDownloadError
@@ -882,7 +885,7 @@ export function mountGenerator(root: HTMLElement): void {
       playback = pb;
       await pb.done;
     } catch (e) {
-      console.error('Momento: preview failed', e);
+      console.error('Kept: preview failed', e);
       setError(
         e instanceof MimiDownloadError
           ? "The voice model didn't download. Check the connection and try again."
@@ -906,11 +909,11 @@ export function mountGenerator(root: HTMLElement): void {
     c.width = Math.round(r.plan.widthMm * PX_PER_MM);
     c.height = Math.round(r.plan.heightMm * PX_PER_MM);
     drawCard(c.getContext('2d')!, r, PX_PER_MM);
-    downloadPng(c, 'momento-card-back.png');
+    downloadPng(c, 'kept-card-back.png');
   });
   $('dl-svg').addEventListener('click', () => {
     if (!state.renderInput) return;
-    downloadBlob(new Blob([renderSvg(state.renderInput)], { type: 'image/svg+xml' }), 'momento-card-back.svg');
+    downloadBlob(new Blob([renderSvg(state.renderInput)], { type: 'image/svg+xml' }), 'kept-card-back.svg');
   });
   $('dl-front-png').addEventListener('click', () => {
     if (!frontReady()) return;
@@ -919,11 +922,11 @@ export function mountGenerator(root: HTMLElement): void {
     c.width = Math.round(widthMm * PX_PER_MM);
     c.height = Math.round(heightMm * PX_PER_MM);
     drawFront(c.getContext('2d')!, frontInput(), PX_PER_MM);
-    downloadPng(c, 'momento-card-front.png');
+    downloadPng(c, 'kept-card-front.png');
   });
   $('dl-front-svg').addEventListener('click', () => {
     if (!frontReady()) return;
-    downloadBlob(new Blob([renderFrontSvg(frontInput())], { type: 'image/svg+xml' }), 'momento-card-front.svg');
+    downloadBlob(new Blob([renderFrontSvg(frontInput())], { type: 'image/svg+xml' }), 'kept-card-front.svg');
   });
 
   // --- first paint ---

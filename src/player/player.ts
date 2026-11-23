@@ -9,12 +9,34 @@ import { ChunkCollector, WIRE_MIMI, WIRE_PULSE } from '../lib/chunk';
 import { brandHeader } from '../lib/brand';
 import { scanPhoto, startScanner, type ScannerHandle } from './scanner';
 
+const icon = (body: string): string =>
+  `<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+
+/** The insert card from the box: three steps and three promises. */
+const HOW_IT_WORKS = `
+  <section class="insert" aria-labelledby="how-title">
+    <h2 id="how-title">How it works</h2>
+    <ol class="steps">
+      <li>${icon('<path d="M5 11V6h5M22 6h5v5M27 21v5h-5M10 26H5v-5"/>')}
+        <div><strong>Scan</strong><span>Scan every code on the back of the card.</span></div></li>
+      <li>${icon('<rect x="10" y="4" width="12" height="24" rx="2.5"/><path d="M14.5 24.5h3"/>')}
+        <div><strong>Build</strong><span>This page reads the codes and rebuilds the sound, right on your phone.</span></div></li>
+      <li>${icon('<circle cx="16" cy="16" r="11.5"/><path d="M13.5 11.5v9l7-4.5z"/>')}
+        <div><strong>Listen</strong><span>Hear the moment again, anytime you scan.</span></div></li>
+    </ol>
+    <ul class="promises">
+      <li>${icon('<path d="M16 6 4 12l12 6 12-6z"/><path d="m4 17 12 6 12-6"/>')}Stored on the card</li>
+      <li>${icon('<circle cx="16" cy="16" r="10"/><path d="M9 23 23 9"/>')}No subscriptions</li>
+      <li>${icon('<path d="M16 16c-2.6-3.3-4.4-5-6.8-5a5 5 0 0 0 0 10c2.4 0 4.2-1.7 6.8-5s4.4-5 6.8-5a5 5 0 0 1 0 10c-2.4 0-4.2-1.7-6.8-5z"/>')}Yours to keep</li>
+    </ul>
+  </section>`;
+
 export function mountPlayer(root: HTMLElement): void {
   root.innerHTML = `
     <div class="player">
-      ${brandHeader(
-        'This card holds a sound. Scan every code on it to listen — the audio exists nowhere else.',
-      )}
+      ${brandHeader()}
+      <p class="lede">This card holds a sound. Scan every code on its back to listen —
+        the audio exists nowhere else.</p>
       <div id="stage"></div>
     </div>
   `;
@@ -68,6 +90,7 @@ export function mountPlayer(root: HTMLElement): void {
       </div>
       <p class="hint">Point your camera at the card and pan slowly across all the squares —
         or upload a clear photo that shows every square.</p>
+      ${HOW_IT_WORKS}
     `;
     stage.querySelector('#start')!.addEventListener('click', () => {
       void showScanning();
@@ -214,7 +237,7 @@ export function mountPlayer(root: HTMLElement): void {
       if (chunks === 0) {
         msg.textContent = wrongCard
           ? 'That photo seems to show a different card — keep to one card at a time.'
-          : 'No Momento codes found in that photo. Try a sharper, closer shot in good light.';
+          : 'No Kept codes found in that photo. Try a sharper, closer shot in good light.';
       } else if (total && got < total) {
         msg.textContent = `Still missing ${missing.length} square${missing.length === 1 ? '' : 's'} — add another photo covering the rest of the card.`;
       }
@@ -275,12 +298,12 @@ export function mountPlayer(root: HTMLElement): void {
     } catch (e) {
       // The screens below are deliberately plain; the console keeps the cause
       // for anyone debugging a phone over USB.
-      console.error('Momento: could not rebuild the audio', e);
+      console.error('Kept: could not rebuild the audio', e);
       clearStashedCard(); // the timeout branch below re-stashes; nothing else should resume
       if (e instanceof UnknownCardError) {
         // A format this build doesn't know — decoding it anyway would play
         // garbage, so be honest instead.
-        stage.innerHTML = `<div class="error">This card was made with a newer version of Momento — refresh this page and try again.</div>`;
+        stage.innerHTML = `<div class="error">This card was made with a newer version of Kept — refresh this page and try again.</div>`;
         setTimeout(showIdle, 4000);
         return;
       }

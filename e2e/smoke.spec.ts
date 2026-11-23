@@ -27,7 +27,7 @@ test('the scanner is the home page, the maker lives at create/, and neither link
 
 test('generator: upload → stats → card preview → downloads enabled', async ({ page }) => {
   await page.goto('/momento/create/');
-  await expect(page.locator('.st-mark')).toContainText('Momento');
+  await expect(page.locator('.st-mark')).toContainText('Kept');
   // A voice card is the default kind.
   await expect(page.locator('.kind[data-kind="voice"]')).toHaveAttribute('aria-checked', 'true');
 
@@ -67,13 +67,13 @@ test('generator: upload → stats → card preview → downloads enabled', async
   expect(pngBytes.readUInt32BE(41)).toBe(47244); // px per metre = 1200 dpi
 
   const [frontPng] = await Promise.all([page.waitForEvent('download'), page.click('#dl-front-png')]);
-  expect(frontPng.suggestedFilename()).toBe('momento-card-front.png');
+  expect(frontPng.suggestedFilename()).toBe('kept-card-front.png');
   expect(PNG.sync.read(fs.readFileSync((await frontPng.path())!)).width).toBe(png.width);
 
   const [backDownload] = await Promise.all([page.waitForEvent('download'), page.click('#dl-svg')]);
-  expect(backDownload.suggestedFilename()).toBe('momento-card-back.svg');
+  expect(backDownload.suggestedFilename()).toBe('kept-card-back.svg');
   const [frontDownload] = await Promise.all([page.waitForEvent('download'), page.click('#dl-front-svg')]);
-  expect(frontDownload.suggestedFilename()).toBe('momento-card-front.svg');
+  expect(frontDownload.suggestedFilename()).toBe('kept-card-front.svg');
 });
 
 test('generator: before any sound, the front is a live sample and nothing downloads', async ({ page }) => {

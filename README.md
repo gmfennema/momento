@@ -1,6 +1,6 @@
-# Momento — audio that lives on a business card
+# Kept — precious sounds, kept in metal
 
-Momento turns up to **10 seconds of audio** into a grid of QR codes sized for a
+Kept turns up to **10 seconds of audio** into a grid of QR codes sized for a
 business card, ready for laser engraving: a **metal card (85.6 × 54 mm,
 credit-card size)** by default, or a **3.5″ × 2″ paper card**. Scanning the
 card's entry code opens this site, which then reads every code on the card with

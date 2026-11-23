@@ -1,39 +1,65 @@
-// Shared brand chrome: the letterspaced wordmark and engraved-soundwave motif
-// that echo the physical card the site produces.
+// Kept brand chrome: the letterspaced wordmark, the hairline soundwave, the
+// wax-seal mark and the "Precious sounds, kept in metal." band. They echo the
+// box the card ships in: black board, a sand belly band, a black seal.
 
-// Bar heights (% of the motif height) tracing a two-lobed voice envelope,
-// like the engraving on the card front.
-const WAVE_BARS = [
-  4, 6, 10, 8, 16, 24, 18, 34, 46, 38, 58, 72, 64, 88, 78, 96, 84, 100, 90, 72, 60,
-  60, 72, 90, 100, 84, 96, 78, 88, 64, 72, 58, 38, 46, 34, 18, 24, 16, 8, 10, 6, 4,
-];
+export const BRAND = 'Kept';
+export const TAGLINE = 'Precious sounds, kept in metal.';
 
-const BAR_W = 2;
-const BAR_GAP = 4;
-const WAVE_H = 44;
+// Half of the wave, outside in (% of its height). Mirrored about the tallest
+// bar: tiny dots at the tips, a fine alternating rise to one tall stroke.
+const HALF = [5, 5, 9, 6, 14, 9, 20, 12, 28, 17, 38, 24, 50, 32, 64, 44, 78, 58];
+const WAVE_BARS = [...HALF, 100, ...HALF.slice().reverse()];
 
-export function waveMotif(className = 'wave'): string {
-  const width = WAVE_BARS.length * (BAR_W + BAR_GAP) - BAR_GAP;
-  const rects = WAVE_BARS.map((p, i) => {
-    const h = Math.max(2, (p / 100) * WAVE_H);
-    const y = (WAVE_H - h) / 2;
-    return `<rect x="${i * (BAR_W + BAR_GAP)}" y="${y.toFixed(1)}" width="${BAR_W}" height="${h.toFixed(1)}" rx="1"/>`;
-  }).join('');
+/** The hairline soundwave. `bars` thins it out for small marks (the seal). */
+export function waveMotif(className = 'wave', bars: readonly number[] = WAVE_BARS): string {
+  const pitch = 6;
+  const h = 48;
+  const w = (bars.length - 1) * pitch + 2;
+  const lines = bars
+    .map((p, i) => {
+      const len = Math.max(1.6, (p / 100) * (h - 2));
+      const x = 1 + i * pitch;
+      return `<line x1="${x}" y1="${((h - len) / 2).toFixed(1)}" x2="${x}" y2="${((h + len) / 2).toFixed(1)}"/>`;
+    })
+    .join('');
   return (
-    `<svg class="${className}" viewBox="0 0 ${width} ${WAVE_H}" ` +
-    `fill="currentColor" aria-hidden="true">${rects}</svg>`
+    `<svg class="${className}" viewBox="0 0 ${w} ${h}" fill="none" stroke="currentColor" ` +
+    `stroke-width="1.4" stroke-linecap="round" aria-hidden="true">${lines}</svg>`
   );
 }
 
-// No navigation: the scanner (home page) and the card maker (create/) are
-// deliberately kept from linking to each other.
-export function brandHeader(tagline: string): string {
-  return `
-    <header class="masthead">
-      <h1 class="wordmark">Momento</h1>
-      ${waveMotif()}
-      <p class="tagline">${tagline}</p>
-    </header>
-  `;
+const SEAL_BARS = [16, 34, 22, 58, 100, 58, 22, 34, 16];
+
+/** The seal: a small wave inside a ring — the wax seal on the box band and
+ * the app icon. Coloured by `currentColor`. */
+export function sealMark(className = 'seal'): string {
+  const pitch = 4.2;
+  const lines = SEAL_BARS.map((p, i) => {
+    const len = Math.max(1.5, (p / 100) * 22);
+    const x = 32 + (i - (SEAL_BARS.length - 1) / 2) * pitch;
+    return `<line x1="${x.toFixed(1)}" y1="${(32 - len / 2).toFixed(1)}" x2="${x.toFixed(1)}" y2="${(32 + len / 2).toFixed(1)}"/>`;
+  }).join('');
+  return (
+    `<svg class="${className}" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">` +
+    `<circle cx="32" cy="32" r="24.5" stroke-width="0.9" opacity="0.7"/>` +
+    `<g stroke-width="1.5">${lines}</g></svg>`
+  );
 }
 
+/** The scanner's masthead: wordmark, wave, and the sand band carrying the
+ * tagline and the seal. No navigation: the scanner (home page) and the card
+ * maker (create/) deliberately don't link to each other. */
+export function brandHeader(): string {
+  return `
+    <header class="masthead">
+      <h1 class="wordmark">${BRAND}</h1>
+      ${waveMotif()}
+    </header>
+    <div class="band">
+      <div class="band-inner">
+        <p class="band-line">Precious sounds,<br />kept in metal.</p>
+        <span class="wax">${sealMark()}</span>
+      </div>
+    </div>
+  `;
+}

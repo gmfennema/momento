@@ -1,17 +1,19 @@
-/* Momento card station. A pale gallery wall with the card as the one object
-   on it: everything around the card stays quiet so the engraving reads. */
+/* Kept card station. Warm linen with the card as the one object on it, like
+   the box's contents laid out on a table: everything around the card stays
+   quiet so the engraving reads. */
 
 :root {
-  --fog: #e9eaec;
-  --paper: #f7f7f8;
-  --line: #d3d5d9;
-  --line-soft: #e0e2e5;
-  --ink: #202226;
-  --slate: #6d7178;
-  --anodized: #141517;
-  --engrave: #d4d6da;
+  --fog: #e8e2d8;
+  --paper: #f6f2eb;
+  --line: #d4ccbf;
+  --line-soft: #e0d9ce;
+  --ink: #1d1b18;
+  --slate: #706a60;
+  --anodized: #151412;
+  --engrave: #d9d1c4;
   --danger: #a3352b;
   --display: 'Cormorant Garamond', 'Iowan Old Style', Georgia, serif;
+  --caps: 'Jost', system-ui, sans-serif;
   --text: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 }
@@ -49,8 +51,8 @@ body.station #app {
 
 .st-head {
   display: flex;
-  align-items: baseline;
-  gap: 14px;
+  align-items: center;
+  gap: 18px;
   padding-bottom: 20px;
   border-bottom: 1px solid var(--line);
   margin-bottom: 40px;
@@ -58,15 +60,41 @@ body.station #app {
 
 .st-mark {
   font-family: var(--display);
-  font-weight: 600;
-  font-size: 28px;
-  letter-spacing: 0.02em;
+  font-weight: 500;
+  font-size: 26px;
+  text-transform: uppercase;
+  letter-spacing: 0.42em;
   line-height: 1;
+  margin-right: -0.42em; /* tracking leaves a trailing gap */
+}
+
+.st-wave {
+  height: 18px;
+  color: var(--ink);
+  opacity: 0.75;
 }
 
 .st-sub {
+  margin-left: auto;
+  font-family: var(--caps);
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
   color: var(--slate);
-  font-size: 14px;
+}
+
+.st-tag {
+  font-family: var(--display);
+  font-style: italic;
+  font-size: 17px;
+  color: var(--slate);
+}
+
+@media (max-width: 720px) {
+  .st-tag {
+    display: none;
+  }
 }
 
 /* ---- layout ---- */
@@ -114,9 +142,9 @@ body.station #app {
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
   box-shadow:
-    0 1px 1px rgba(20, 22, 26, 0.18),
-    0 10px 24px -10px rgba(20, 22, 26, 0.35),
-    0 36px 70px -28px rgba(20, 22, 26, 0.45);
+    0 1px 1px rgba(36, 30, 24, 0.18),
+    0 10px 24px -10px rgba(36, 30, 24, 0.35),
+    0 36px 70px -28px rgba(36, 30, 24, 0.45);
 }
 
 .face-back {
@@ -283,7 +311,7 @@ body.station #app {
 .seg button[aria-checked='true'] {
   background: var(--paper);
   color: var(--ink);
-  box-shadow: 0 1px 2px rgba(20, 22, 26, 0.12);
+  box-shadow: 0 1px 2px rgba(36, 30, 24, 0.12);
 }
 
 .seg-wide {
@@ -399,7 +427,7 @@ body.station #app {
 }
 
 .kind:hover {
-  border-color: #a9acb2;
+  border-color: #b3aa9c;
 }
 
 .kind[aria-checked='true'] {
@@ -420,7 +448,7 @@ body.station #app {
   justify-items: center;
   text-align: center;
   padding: 26px 20px;
-  border: 1px dashed #a9acb2;
+  border: 1px dashed #b3aa9c;
   border-radius: 12px;
   background: var(--paper);
   cursor: pointer;
@@ -466,9 +494,9 @@ body.station #app {
   border: 1px solid var(--line-soft);
   touch-action: none;
   cursor: ew-resize;
-  --wave-ink: #7d8188;
-  --wave-sel: rgba(32, 34, 38, 0.08);
-  --wave-edge: #202226;
+  --wave-ink: #847d72;
+  --wave-sel: rgba(36, 30, 24, 0.08);
+  --wave-edge: #1d1b18;
 }
 
 /* designs */
@@ -498,12 +526,12 @@ body.station #app {
   margin-bottom: 8px;
   outline: 1px solid transparent;
   outline-offset: 4px;
-  box-shadow: 0 6px 16px -10px rgba(20, 22, 26, 0.5);
+  box-shadow: 0 6px 16px -10px rgba(36, 30, 24, 0.5);
   transition: outline-color 0.15s;
 }
 
 .designs[data-stock='light'] .design canvas {
-  box-shadow: 0 0 0 1px var(--line), 0 6px 16px -10px rgba(20, 22, 26, 0.35);
+  box-shadow: 0 0 0 1px var(--line), 0 6px 16px -10px rgba(36, 30, 24, 0.35);
 }
 
 .design[aria-checked='true'] canvas {
@@ -511,7 +539,7 @@ body.station #app {
 }
 
 .design:hover canvas {
-  outline-color: #a9acb2;
+  outline-color: #b3aa9c;
 }
 
 .design[aria-checked='true']:hover canvas {
